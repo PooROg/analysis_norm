@@ -1,4 +1,4 @@
-# Файл: dialogs/editor.py
+# dialogs/editor.py
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import tkinter as tk
@@ -10,266 +10,268 @@ from scipy.interpolate import interp1d, CubicSpline
 class NormEditorDialog:
     """Диалог редактирования норм участка"""
     
-    def __init__(self, parent, section_name, existing_norms=None):
-        self.parent = parent
-        self.section_name = section_name
-        self.existing_norms = existing_norms or {}
-        self.edited_norms = {}
-        self.result = None
-        self.norm_entries = {}
-        self.dialog = tk.Toplevel(parent)
-        self.dialog.title(f"Актуализация норм - {section_name}")
-        self.dialog.geometry("800x600")
-        self.dialog.transient(parent)
-        self.dialog.grab_set()
+    def __init__(self, p, sn, en=None):
+        self.p = p
+        self.sn = sn
+        self.en = en or {}
+        self.ed = {}
+        self.res = None
+        self.ne = {}
+        self.nt = {}
+        self.d = tk.Toplevel(p)
+        self.d.title(f"Актуализация норм - {sn}")
+        self.d.geometry("800x600")
+        self.d.transient(p)
+        self.d.grab_set()
         self.create_widgets()
         self.load_existing_norms()
         self.center_window()
     
     def center_window(self):
-        self.dialog.update_idletasks()
-        width = self.dialog.winfo_width()
-        height = self.dialog.winfo_height()
-        x = (self.dialog.winfo_screenwidth() // 2) - (width // 2)
-        y = (self.dialog.winfo_screenheight() // 2) - (height // 2)
-        self.dialog.geometry(f'{width}x{height}+{x}+{y}')
+        self.d.update_idletasks()
+        w = self.d.winfo_width()
+        h = self.d.winfo_height()
+        x = (self.d.winfo_screenwidth() // 2) - (w // 2)
+        y = (self.d.winfo_screenheight() // 2) - (h // 2)
+        self.d.geometry(f'{w}x{h}+{x}+{y}')
     
     def create_widgets(self):
-        main_frame = ttk.Frame(self.dialog, padding="10")
-        main_frame.pack(fill=tk.BOTH, expand=True)
-        title_label = ttk.Label(main_frame, text=f"Редактирование норм для участка: {self.section_name}", font=('Arial', 12, 'bold'))
-        title_label.pack(pady=(0, 10))
-        info_text = ("Введите точки нормы (нагрузка на ось → удельный расход).\n"
+        mf = ttk.Frame(self.d, padding="10")
+        mf.pack(fill=tk.BOTH, expand=True)
+        tl = ttk.Label(mf, text=f"Редактирование норм для участка: {self.sn}", font=('Arial', 12, 'bold'))
+        tl.pack(pady=(0, 10))
+        it = ("Введите точки нормы (нагрузка на ось → удельный расход).\n"
                     "Минимум 2 точки для построения кривой.\n"
                     "Для удаления нормы очистите все точки.")
-        info_label = ttk.Label(main_frame, text=info_text, foreground='gray')
-        info_label.pack(pady=(0, 10))
-        self.notebook = ttk.Notebook(main_frame)
-        self.notebook.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
-        add_norm_btn = ttk.Button(main_frame, text="+ Добавить норму", command=self.add_new_norm)
-        add_norm_btn.pack(pady=(0, 10))
-        button_frame = ttk.Frame(main_frame)
-        button_frame.pack(side=tk.BOTTOM, fill=tk.X)
-        ttk.Button(button_frame, text="Применить", command=self.apply_changes).pack(side=tk.RIGHT, padx=(5, 0))
-        ttk.Button(button_frame, text="Отмена", command=self.cancel).pack(side=tk.RIGHT)
-        ttk.Button(button_frame, text="Сброс", command=self.reset_norms).pack(side=tk.LEFT)
-        ttk.Button(button_frame, text="Предпросмотр", command=self.preview_norms).pack(side=tk.LEFT, padx=(5, 0))
+        il = ttk.Label(mf, text=it, foreground='gray')
+        il.pack(pady=(0, 10))
+        self.nb = ttk.Notebook(mf)
+        self.nb.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+        self.nt = {}
+        anb = ttk.Button(mf, text="+ Добавить норму", command=self.add_new_norm)
+        anb.pack(pady=(0, 10))
+        bf = ttk.Frame(mf)
+        bf.pack(side=tk.BOTTOM, fill=tk.X)
+        ttk.Button(bf, text="Применить", command=self.apply_changes).pack(side=tk.RIGHT, padx=(5, 0))
+        ttk.Button(bf, text="Отмена", command=self.cancel).pack(side=tk.RIGHT)
+        ttk.Button(bf, text="Сброс", command=self.reset_norms).pack(side=tk.LEFT)
+        ttk.Button(bf, text="Предпросмотр", command=self.preview_norms).pack(side=tk.LEFT, padx=(5, 0))
         for i in range(1, 4):
             self.create_norm_tab(i)
     
-    def create_norm_tab(self, norm_id):
-        tab_frame = ttk.Frame(self.notebook)
-        self.notebook.add(tab_frame, text=f"Норма №{norm_id}")
-        self.norm_tabs[norm_id] = tab_frame
-        desc_frame = ttk.Frame(tab_frame)
-        desc_frame.pack(fill=tk.X, padx=10, pady=(10, 5))
-        ttk.Label(desc_frame, text="Описание:").pack(side=tk.LEFT, padx=(0, 5))
-        desc_entry = ttk.Entry(desc_frame, width=50)
-        desc_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        points_frame = ttk.LabelFrame(tab_frame, text="Точки нормы", padding="10")
-        points_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-        ttk.Label(points_frame, text="№", width=5).grid(row=0, column=0, padx=5, pady=5)
-        ttk.Label(points_frame, text="Нагрузка на ось, т", width=20).grid(row=0, column=1, padx=5, pady=5)
-        ttk.Label(points_frame, text="Удельный расход, кВт·ч/изм", width=25).grid(row=0, column=2, padx=5, pady=5)
-        entries = {'description': desc_entry, 'points': []}
+    def create_norm_tab(self, ni):
+        tf = ttk.Frame(self.nb)
+        self.nb.add(tf, text=f"Норма №{ni}")
+        self.nt[ni] = tf
+        df = ttk.Frame(tf)
+        df.pack(fill=tk.X, padx=10, pady=(10, 5))
+        ttk.Label(df, text="Описание:").pack(side=tk.LEFT, padx=(0, 5))
+        de = ttk.Entry(df, width=50)
+        de.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        pf = ttk.LabelFrame(tf, text="Точки нормы", padding="10")
+        pf.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        ttk.Label(pf, text="№", width=5).grid(row=0, column=0, padx=5, pady=5)
+        ttk.Label(pf, text="Нагрузка на ось, т", width=20).grid(row=0, column=1, padx=5, pady=5)
+        ttk.Label(pf, text="Удельный расход, кВт·ч/изм", width=25).grid(row=0, column=2, padx=5, pady=5)
+        ent = {'description': de, 'points': []}
         for i in range(10):
-            ttk.Label(points_frame, text=f"{i+1}").grid(row=i+1, column=0, padx=5, pady=2)
-            load_entry = ttk.Entry(points_frame, width=20)
-            load_entry.grid(row=i+1, column=1, padx=5, pady=2)
-            consumption_entry = ttk.Entry(points_frame, width=25)
-            consumption_entry.grid(row=i+1, column=2, padx=5, pady=2)
-            entries['points'].append((load_entry, consumption_entry))
-        self.norm_entries[norm_id] = entries
-        btn_frame = ttk.Frame(points_frame)
-        btn_frame.grid(row=11, column=0, columnspan=3, pady=(10, 0))
-        ttk.Button(btn_frame, text="Очистить все", command=lambda nid=norm_id: self.clear_norm_points(nid)).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_frame, text="Сортировать", command=lambda nid=norm_id: self.sort_norm_points(nid)).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_frame, text="Интерполировать", command=lambda nid=norm_id: self.interpolate_points(nid)).pack(side=tk.LEFT, padx=5)
+            ttk.Label(pf, text=f"{i+1}").grid(row=i+1, column=0, padx=5, pady=2)
+            le = ttk.Entry(pf, width=20)
+            le.grid(row=i+1, column=1, padx=5, pady=2)
+            ce = ttk.Entry(pf, width=25)
+            ce.grid(row=i+1, column=2, padx=5, pady=2)
+            ent['points'].append((le, ce))
+        self.ne[ni] = ent
+        btnf = ttk.Frame(pf)
+        btnf.grid(row=11, column=0, columnspan=3, pady=(10, 0))
+        ttk.Button(btnf, text="Очистить все", command=lambda nid=ni: self.clear_norm_points(nid)).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btnf, text="Сортировать", command=lambda nid=ni: self.sort_norm_points(nid)).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btnf, text="Интерполировать", command=lambda nid=ni: self.interpolate_points(nid)).pack(side=tk.LEFT, padx=5)
     
     def add_new_norm(self):
-        new_id = len(self.norm_tabs) + 1
-        if new_id <= 10:
-            self.create_norm_tab(new_id)
-            self.notebook.select(len(self.notebook.tabs()) - 1)
+        nid = len(self.nt) + 1
+        if nid <= 10:
+            self.create_norm_tab(nid)
+            self.nb.select(len(self.nb.tabs()) - 1)
         else:
             messagebox.showwarning("Предупреждение", "Достигнуто максимальное количество норм (10)")
     
     def load_existing_norms(self):
-        for norm_id, norm_data in self.existing_norms.items():
-            if norm_id in self.norm_entries:
-                entries = self.norm_entries[norm_id]
-                if 'description' in norm_data:
-                    entries['description'].insert(0, norm_data['description'])
-                if 'points' in norm_data:
-                    points = norm_data['points']
-                    for i, (load, consumption) in enumerate(points[:10]):
-                        entries['points'][i][0].insert(0, str(load))
-                        entries['points'][i][1].insert(0, str(consumption))
+        for ni, nd in self.en.items():
+            if ni in self.ne:
+                ent = self.ne[ni]
+                if 'description' in nd:
+                    ent['description'].insert(0, nd['description'])
+                if 'points' in nd:
+                    pts = nd['points']
+                    for i, (l, c) in enumerate(pts[:10]):
+                        ent['points'][i][0].insert(0, str(l))
+                        ent['points'][i][1].insert(0, str(c))
     
-    def clear_norm_points(self, norm_id):
-        if norm_id in self.norm_entries:
-            entries = self.norm_entries[norm_id]
-            for load_entry, consumption_entry in entries['points']:
-                load_entry.delete(0, tk.END)
-                consumption_entry.delete(0, tk.END)
+    def clear_norm_points(self, ni):
+        if ni in self.ne:
+            ent = self.ne[ni]
+            for le, ce in ent['points']:
+                le.delete(0, tk.END)
+                ce.delete(0, tk.END)
     
-    def sort_norm_points(self, norm_id):
-        if norm_id in self.norm_entries:
-            entries = self.norm_entries[norm_id]
-            points = []
-            for load_entry, consumption_entry in entries['points']:
-                load_val = load_entry.get().strip()
-                consumption_val = consumption_entry.get().strip()
-                if load_val and consumption_val:
+    def sort_norm_points(self, ni):
+        if ni in self.ne:
+            ent = self.ne[ni]
+            pts = []
+            for le, ce in ent['points']:
+                lv = le.get().strip()
+                cv = ce.get().strip()
+                if lv and cv:
                     try:
-                        points.append((float(load_val), float(consumption_val)))
+                        pts.append((float(lv), float(cv)))
                     except ValueError:
                         continue
-            points.sort(key=lambda x: x[0])
-            self.clear_norm_points(norm_id)
-            for i, (load, consumption) in enumerate(points):
-                entries['points'][i][0].insert(0, str(load))
-                entries['points'][i][1].insert(0, str(consumption))
+            pts.sort(key=lambda x: x[0])
+            self.clear_norm_points(ni)
+            for i, (l, c) in enumerate(pts):
+                ent['points'][i][0].insert(0, str(l))
+                ent['points'][i][1].insert(0, str(c))
     
-    def interpolate_points(self, norm_id):
-        if norm_id in self.norm_entries:
-            entries = self.norm_entries[norm_id]
-            points = []
-            for load_entry, consumption_entry in entries['points']:
-                load_val = load_entry.get().strip()
-                consumption_val = consumption_entry.get().strip()
-                if load_val and consumption_val:
+    def interpolate_points(self, ni):
+        if ni in self.ne:
+            ent = self.ne[ni]
+            pts = []
+            for le, ce in ent['points']:
+                lv = le.get().strip()
+                cv = ce.get().strip()
+                if lv and cv:
                     try:
-                        points.append((float(load_val), float(consumption_val)))
+                        pts.append((float(lv), float(cv)))
                     except ValueError:
                         continue
-            if len(points) < 2:
+            if len(pts) < 2:
                 messagebox.showwarning("Предупреждение", "Нужно минимум 2 точки для интерполяции")
                 return
-            points.sort(key=lambda x: x[0])
-            x_vals = [p[0] for p in points]
-            y_vals = [p[1] for p in points]
-            if len(points) == 2:
-                interp_func = interp1d(x_vals, y_vals, kind='linear')
+            pts.sort(key=lambda x: x[0])
+            xv = [p[0] for p in pts]
+            yv = [p[1] for p in pts]
+            if len(pts) == 2:
+                inf = interp1d(xv, yv, kind='linear')
             else:
                 try:
-                    interp_func = CubicSpline(x_vals, y_vals)
+                    inf = CubicSpline(xv, yv)
                 except:
-                    interp_func = interp1d(x_vals, y_vals, kind='quadratic')
-            x_new = np.linspace(min(x_vals), max(x_vals), min(10, len(points) + 3))
-            y_new = interp_func(x_new)
-            self.clear_norm_points(norm_id)
-            for i, (x, y) in enumerate(zip(x_new, y_new)):
+                    inf = interp1d(xv, yv, kind='quadratic')
+            xn = np.linspace(min(xv), max(xv), min(10, len(pts) + 3))
+            yn = inf(xn)
+            self.clear_norm_points(ni)
+            for i, (x, y) in enumerate(zip(xn, yn)):
                 if i < 10:
-                    entries['points'][i][0].insert(0, f"{x:.1f}")
-                    entries['points'][i][1].insert(0, f"{y:.1f}")
+                    ent['points'][i][0].insert(0, f"{x:.1f}")
+                    ent['points'][i][1].insert(0, f"{y:.1f}")
     
     def get_edited_norms(self):
-        edited_norms = {}
-        for norm_id, entries in self.norm_entries.items():
-            points = []
-            for load_entry, consumption_entry in entries['points']:
-                load_val = load_entry.get().strip()
-                consumption_val = consumption_entry.get().strip()
-                if load_val and consumption_val:
+        en = {}
+        for ni, ent in self.ne.items():
+            pts = []
+            for le, ce in ent['points']:
+                lv = le.get().strip()
+                cv = ce.get().strip()
+                if lv and cv:
                     try:
-                        points.append((float(load_val), float(consumption_val)))
+                        pts.append((float(lv), float(cv)))
                     except ValueError:
                         continue
-            if len(points) >= 2:
-                points.sort(key=lambda x: x[0])
-                edited_norms[norm_id] = {
-                    'points': points,
-                    'description': entries['description'].get().strip()
+            if len(pts) >= 2:
+                pts.sort(key=lambda x: x[0])
+                en[ni] = {
+                    'points': pts,
+                    'description': ent['description'].get().strip()
                 }
-        return edited_norms
+        return en
     
     def validate_norms(self):
-        edited_norms = self.get_edited_norms()
-        if not edited_norms:
+        en = self.get_edited_norms()
+        if not en:
             messagebox.showwarning("Предупреждение", "Не введено ни одной корректной нормы")
             return False
-        for norm_id, norm_data in edited_norms.items():
-            points = norm_data['points']
-            x_vals = [p[0] for p in points]
-            if len(x_vals) != len(set(x_vals)):
-                messagebox.showwarning("Предупреждение", f"Норма №{norm_id}: обнаружены дублирующиеся значения нагрузки")
+        for ni, nd in en.items():
+            pts = nd['points']
+            xv = [p[0] for p in pts]
+            if len(xv) != len(set(xv)):
+                messagebox.showwarning("Предупреждение", f"Норма №{ni}: обнаружены дублирующиеся значения нагрузки")
                 return False
-            for load, consumption in points:
-                if load <= 0 or consumption <= 0:
-                    messagebox.showwarning("Предупреждение", f"Норма №{norm_id}: значения должны быть положительными")
+            for l, c in pts:
+                if l <= 0 or c <= 0:
+                    messagebox.showwarning("Предупреждение", f"Норма №{ni}: значения должны быть положительными")
                     return False
         return True
     
     def preview_norms(self):
         if not self.validate_norms():
             return
-        edited_norms = self.get_edited_norms()
-        preview_window = tk.Toplevel(self.dialog)
-        preview_window.title("Предпросмотр норм")
-        preview_window.geometry("600x400")
-        preview_window.transient(self.dialog)
-        text_widget = tk.Text(preview_window, wrap=tk.WORD, padx=10, pady=10)
-        text_widget.pack(fill=tk.BOTH, expand=True)
-        preview_text = f"Участок: {self.section_name}\n" + "=" * 50 + "\n\n"
-        for norm_id, norm_data in sorted(edited_norms.items()):
-            preview_text += f"Норма №{norm_id}\n"
-            if norm_data['description']:
-                preview_text += f"Описание: {norm_data['description']}\n"
-            preview_text += f"Количество точек: {len(norm_data['points'])}\nТочки:\n"
-            for i, (load, consumption) in enumerate(norm_data['points'], 1):
-                preview_text += f"  {i}. Нагрузка: {load:.1f} т/ось → Расход: {consumption:.1f} кВт·ч/изм\n"
-            preview_text += "\n"
-        text_widget.insert(1.0, preview_text)
-        text_widget.config(state='disabled')
-        ttk.Button(preview_window, text="Закрыть", command=preview_window.destroy).pack(pady=10)
+        en = self.get_edited_norms()
+        pw = tk.Toplevel(self.d)
+        pw.title("Предпросмотр норм")
+        pw.geometry("600x400")
+        pw.transient(self.d)
+        tw = tk.Text(pw, wrap=tk.WORD, padx=10, pady=10)
+        tw.pack(fill=tk.BOTH, expand=True)
+        pt = f"Участок: {self.sn}\n" + "=" * 50 + "\n\n"
+        for ni, nd in sorted(en.items()):
+            pt += f"Норма №{ni}\n"
+            if nd['description']:
+                pt += f"Описание: {nd['description']}\n"
+            pt += f"Количество точек: {len(nd['points'])}\nТочки:\n"
+            for i, (l, c) in enumerate(nd['points'], 1):
+                pt += f"  {i}. Нагрузка: {l:.1f} т/ось → Расход: {c:.1f} кВт·ч/изм\n"
+            pt += "\n"
+        tw.insert(1.0, pt)
+        tw.config(state='disabled')
+        ttk.Button(pw, text="Закрыть", command=pw.destroy).pack(pady=10)
     
     def apply_changes(self):
         if not self.validate_norms():
             return
-        self.edited_norms = self.get_edited_norms()
-        self.result = 'apply'
-        self.dialog.destroy()
+        self.ed = self.get_edited_norms()
+        self.res = 'apply'
+        self.d.destroy()
     
     def cancel(self):
-        self.result = 'cancel'
-        self.dialog.destroy()
+        self.res = 'cancel'
+        self.d.destroy()
     
     def reset_norms(self):
-        response = messagebox.askyesno("Подтверждение", "Сбросить все изменения к исходным нормам?")
-        if response:
-            for norm_id in self.norm_entries:
-                self.clear_norm_points(norm_id)
-                self.norm_entries[norm_id]['description'].delete(0, tk.END)
+        resp = messagebox.askyesno("Подтверждение", "Сбросить все изменения к исходным нормам?")
+        if resp:
+            for ni in self.ne:
+                self.clear_norm_points(ni)
+                self.ne[ni]['description'].delete(0, tk.END)
             self.load_existing_norms()
 
 class NormComparator:
     """Класс для сравнения норм"""
     
     @staticmethod
-    def compare_norms(original_norms, edited_norms, routes_df):
-        comparison_results = {
+    def compare_norms(on, en, rdf):
+        cr = {
             'original': {},
             'edited': {},
             'differences': {}
         }
-        if original_norms:
-            orig_stats = NormComparator._analyze_with_norms(routes_df, original_norms)
-            comparison_results['original'] = orig_stats
-        if edited_norms:
-            edited_stats = NormComparator._analyze_with_norms(routes_df, edited_norms)
-            comparison_results['edited'] = edited_stats
-        if original_norms and edited_norms:
-            comparison_results['differences'] = NormComparator._calculate_differences(
-                comparison_results['original'], 
-                comparison_results['edited']
+        if on:
+            os = NormComparator._analyze_with_norms(rdf, on)
+            cr['original'] = os
+        if en:
+            es = NormComparator._analyze_with_norms(rdf, en)
+            cr['edited'] = es
+        if on and en:
+            cr['differences'] = NormComparator._calculate_differences(
+                cr['original'], 
+                cr['edited']
             )
-        return comparison_results
+        return cr
     
     @staticmethod
-    def _analyze_with_norms(routes_df, norms):
-        stats = {
-            'total_routes': len(routes_df),
+    def _analyze_with_norms(rdf, norms):
+        st = {
+            'total_routes': len(rdf),
             'processed': 0,
             'economy_strong': 0,
             'economy_medium': 0,
@@ -281,54 +283,54 @@ class NormComparator:
             'mean_deviation': 0,
             'median_deviation': 0
         }
-        deviations = []
-        norm_functions = {}
-        for norm_id, norm_data in norms.items():
-            points = norm_data['points']
-            x_vals = [p[0] for p in points]
-            y_vals = [p[1] for p in points]
-            if len(points) == 2:
-                interp_func = interp1d(x_vals, y_vals, kind='linear', fill_value='extrapolate', bounds_error=False)
+        dev = []
+        nf = {}
+        for ni, nd in norms.items():
+            pts = nd['points']
+            xv = [p[0] for p in pts]
+            yv = [p[1] for p in pts]
+            if len(pts) == 2:
+                inf = interp1d(xv, yv, kind='linear', fill_value='extrapolate', bounds_error=False)
             else:
                 try:
-                    interp_func = CubicSpline(x_vals, y_vals)
+                    inf = CubicSpline(xv, yv)
                 except:
-                    interp_func = interp1d(x_vals, y_vals, kind='quadratic', fill_value='extrapolate', bounds_error=False)
-            norm_functions[norm_id] = interp_func
-        for _, row in routes_df.iterrows():
-            norm_id = row['Номер нормы']
-            if norm_id in norm_functions:
+                    inf = interp1d(xv, yv, kind='quadratic', fill_value='extrapolate', bounds_error=False)
+            nf[ni] = inf
+        for _, r in rdf.iterrows():
+            ni = r['Номер нормы']
+            if ni in nf:
                 try:
-                    norm_value = float(norm_functions[norm_id](row['Нажатие на ось']))
-                    if norm_value > 0:
-                        deviation = ((row['Фактический удельный'] - norm_value) / norm_value) * 100
-                        deviations.append(deviation)
-                        stats['processed'] += 1
-                        if deviation >= 30:
-                            stats['economy_strong'] += 1
-                        elif deviation >= 20:
-                            stats['economy_medium'] += 1
-                        elif deviation >= 5:
-                            stats['economy_weak'] += 1
-                        elif deviation >= -5:
-                            stats['normal'] += 1
-                        elif deviation >= -20:
-                            stats['overrun_weak'] += 1
-                        elif deviation >= -30:
-                            stats['overrun_medium'] += 1
+                    nv = float(nf[ni](r['Нажатие на ось']))
+                    if nv > 0:
+                        d = ((r['Фактический удельный'] - nv) / nv) * 100
+                        dev.append(d)
+                        st['processed'] += 1
+                        if d >= 30:
+                            st['economy_strong'] += 1
+                        elif d >= 20:
+                            st['economy_medium'] += 1
+                        elif d >= 5:
+                            st['economy_weak'] += 1
+                        elif d >= -5:
+                            st['normal'] += 1
+                        elif d >= -20:
+                            st['overrun_weak'] += 1
+                        elif d >= -30:
+                            st['overrun_medium'] += 1
                         else:
-                            stats['overrun_strong'] += 1
+                            st['overrun_strong'] += 1
                 except:
                     continue
-        if deviations:
-            stats['mean_deviation'] = np.mean(deviations)
-            stats['median_deviation'] = np.median(deviations)
-        return stats
+        if dev:
+            st['mean_deviation'] = np.mean(dev)
+            st['median_deviation'] = np.median(dev)
+        return st
     
     @staticmethod
-    def _calculate_differences(original_stats, edited_stats):
-        differences = {}
-        for key in original_stats:
-            if isinstance(original_stats[key], (int, float)):
-                differences[key] = edited_stats[key] - original_stats[key]
-        return differences
+    def _calculate_differences(os, es):
+        diff = {}
+        for k in os:
+            if isinstance(os[k], (int, float)):
+                diff[k] = es[k] - os[k]
+        return diff
