@@ -7,7 +7,6 @@ from gui.interface import NormsAnalyzerGUI
 def main():
     r = tk.Tk()
     a = NormsAnalyzerGUI(r)
-    r.protocol("WM_DELETE_WINDOW", a.on_closing)
     r.mainloop()
 
 if __name__ == "__main__":

@@ -140,29 +140,40 @@ class InteractiveNormsAnalyzer:
         return rdf, nf
     
     def analyze_section_with_filters(self, sn, rdf, norms, lf=None, cm=None, uc=False):
+        print(f"Debug: analyze_section_with_filters вызван. uc={uc}, cm есть коэфф={bool(cm and cm.coef)}")
         if lf:
             rdf = lf.filter_routes(rdf)
             if rdf.empty:
                 return rdf, None
         rdf = rdf.copy()
-        if uc and cm:
+        if uc and cm and cm.coef:  # Проверяем что коэффициенты загружены
+            print(f"Debug: Применяем коэффициенты. Загружено коэфф: {len(cm.coef)}")
             rdf['Коэффициент'] = 1.0
             rdf['Факт. удельный исходный'] = rdf['Фактический удельный']
+            applied_count = 0
             for i, r in rdf.iterrows():
-                if 'Серия локомотива' in r and 'Номер локомотива' in r:
-                    s = r['Серия локомотива']
+                if 'Серия локомотива' in rdf.columns and 'Номер локомотива' in rdf.columns:
+                    s = str(r['Серия локомотива']) if pd.notna(r['Серия локомотива']) else ''
                     n = r['Номер локомотива']
-                    if pd.notna(s) and pd.notna(n):
+                    if s and pd.notna(n):
                         try:
                             if isinstance(n, str):
                                 n = int(n.lstrip('0')) if n.strip().lstrip('0') else 0
                             else:
                                 n = int(n)
-                            co = cm.get_coefficient(str(s), n)
+                            co = cm.get_coefficient(s, n)
                             rdf.at[i, 'Коэффициент'] = co
-                            rdf.at[i, 'Фактический удельный'] = rdf.at[i, 'Фактический удельный'] / co
-                        except:
+                            if co != 1.0:  # Применяем коэффициент только если он не равен 1.0
+                                rdf.at[i, 'Фактический удельный'] = rdf.at[i, 'Фактический удельный'] / co
+                                applied_count += 1
+                                if applied_count <= 3:  # Показываем первые 3 для отладки
+                                    print(f"Debug: Применен коэфф {co:.3f} к локомотиву {s} №{n}")
+                        except (ValueError, TypeError) as e:
+                            print(f"Debug: Ошибка обработки локомотива: {e}")
                             continue
+            print(f"Debug: Применено коэффициентов: {applied_count}")
+        else:
+            print("Debug: Коэффициенты НЕ применяются")
         return self.analyze_section(sn, rdf, norms)
     
     def create_interactive_plot(self, sn, ra, nf):
@@ -215,26 +226,35 @@ class InteractiveNormsAnalyzer:
 
         # Добавление фактических точек маршрутов на верхний график
         for _, r in vr.iterrows():
-            # Цвет точки в зависимости от отклонения (для согласованности с нижним графиком)
+            # Цвет точки в зависимости от отклонения
             if r['Отклонение, %'] >= 30:
-                color = '#7C3AED'  # Экономия сильная
+                color = '#7C3AED'
             elif r['Отклонение, %'] >= 20:
                 color = '#9333EA'
             elif r['Отклонение, %'] >= 5:
                 color = '#06B6D4'
             elif r['Отклонение, %'] >= -5:
-                color = '#22C55E'  # Норма
+                color = '#22C55E'
             elif r['Отклонение, %'] >= -20:
-                color = '#EAB308'  # Перерасход слабый
+                color = '#EAB308'
             elif r['Отклонение, %'] >= -30:
                 color = '#F97316'
             else:
-                color = '#DC2626'  # Перерасход сильный
+                color = '#DC2626'
             
             hover_text = (
                 f"Маршрут №{r['Номер маршрута']}<br>"
                 f"Дата: {r['Дата маршрута']}<br>"
                 f"Локомотив: {r.get('Серия локомотива', '')} №{r.get('Номер локомотива', '')}<br>"
+            )
+            
+            # Добавляем информацию о коэффициенте, если он есть
+            if 'Коэффициент' in r.index and pd.notna(r['Коэффициент']) and r['Коэффициент'] != 1.0:
+                hover_text += f"Коэффициент: {r['Коэффициент']:.3f}<br>"
+                if 'Факт. удельный исходный' in r.index and pd.notna(r['Факт. удельный исходный']):
+                    hover_text += f"Факт исходный: {r['Факт. удельный исходный']:.1f}<br>"
+            
+            hover_text += (
                 f"Нажатие: {r['Нажатие на ось']:.2f} т/ось<br>"
                 f"Факт: {r['Фактический удельный']:.1f}<br>"
                 f"Норма: {r['Норма интерполированная']:.1f}<br>"
@@ -271,6 +291,7 @@ class InteractiveNormsAnalyzer:
             'Перерасход -20% до -30%': '#F97316',
             'Перерасход -30% и менее': '#DC2626'
         }
+        
         for gn, gd in dg.items():
             if len(gd) > 0:
                 ht = []
@@ -282,6 +303,13 @@ class InteractiveNormsAnalyzer:
                         txt += f"№{r['Номер локомотива']}<br>"
                     else:
                         txt += "<br>"
+                    
+                    # Добавляем информацию о коэффициенте
+                    if 'Коэффициент' in r.index and pd.notna(r['Коэффициент']) and r['Коэффициент'] != 1.0:
+                        txt += f"Коэффициент: {r['Коэффициент']:.3f}<br>"
+                        if 'Факт. удельный исходный' in r.index and pd.notna(r['Факт. удельный исходный']):
+                            txt += f"Факт исходный: {r['Факт. удельный исходный']:.1f}<br>"
+                    
                     txt += f"Нажатие: {r['Нажатие на ось']:.2f} т/ось<br>Отклонение: {r['Отклонение, %']:.1f}%"
                     ht.append(txt)
                 fig.add_trace(

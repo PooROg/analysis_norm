@@ -17,6 +17,7 @@ class LocomotiveSelectorDialog:
         self.cv = {}
         self.sv = {}
         self.uc = tk.BooleanVar(value=False)
+        self.exclude_low_work = tk.BooleanVar(value=False)  # Новая переменная
         self.d = tk.Toplevel(p)
         self.d.title("Выбор локомотивов и коэффициентов")
         self.d.geometry("900x700")
@@ -48,6 +49,7 @@ class LocomotiveSelectorDialog:
         ttk.Button(ff, text="Очистить", command=self.clear_coefficients).pack(side=tk.LEFT)
         self.csl = ttk.Label(cf, text="", foreground="blue")
         self.csl.pack(fill=tk.X, pady=(5, 0))
+        
         self.ucc = ttk.Checkbutton(
             cf,
             text="Применять коэффициенты при анализе",
@@ -55,6 +57,15 @@ class LocomotiveSelectorDialog:
             command=self.on_use_coefficients_changed
         )
         self.ucc.pack(pady=(5, 0))
+        
+        # Добавляем новую галку для исключения локомотивов с малой работой
+        self.elwc = ttk.Checkbutton(
+            cf,
+            text="Исключить при анализе локомотивы с менее 200 10тыс.ткм брутто",
+            variable=self.exclude_low_work
+        )
+        self.elwc.pack(pady=(5, 0))
+        
         sf = ttk.LabelFrame(mf, text="Выбор локомотивов для анализа", padding="10")
         sf.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
         ctf = ttk.Frame(sf)
@@ -112,7 +123,9 @@ class LocomotiveSelectorDialog:
                 self.cv[(s, n)] = v
                 c = ttk.Checkbutton(scf, variable=v, command=lambda: self.update_selection_count())
                 c.grid(row=rn, column=1, padx=5, pady=1)
-                ttk.Label(scf, text=f"{n:04d}").grid(row=rn, column=2, padx=5, pady=1)
+                # Убираем ведущие нули при отображении
+                display_num = str(n) if n >= 1000 else str(n)
+                ttk.Label(scf, text=display_num).grid(row=rn, column=2, padx=5, pady=1)
                 co = self.cm.get_coefficient(s, n)
                 ct = f"{co:.3f}" if co != 1.0 else "-"
                 cc = "red" if co > 1.05 else "green" if co < 0.95 else "black"
@@ -165,13 +178,17 @@ class LocomotiveSelectorDialog:
     def load_coefficients_file(self):
         fn = filedialog.askopenfilename(title="Выберите файл коэффициентов", filetypes=[("Excel files", "*.xlsx *.xls")])
         if fn:
-            if self.cm.load_coefficients(fn):
+            # Получаем порог фильтрации
+            min_work = 200 if self.exclude_low_work.get() else 0
+            
+            if self.cm.load_coefficients(fn, min_work):
                 self.cfl.config(text=fn.split('/')[-1], foreground="black")
                 st = self.cm.get_statistics()
                 if st:
                     st_txt = f"Загружено: {st['total_locomotives']} локомотивов, {st['series_count']} серий. Средн. откл.: {st['avg_deviation_percent']:.1f}%"
                     self.csl.config(text=st_txt)
                 messagebox.showinfo("Успех", f"Коэффициенты загружены успешно!\nЛокомотивов: {st['total_locomotives']}")
+                # Обновляем интерфейс
                 self.refresh_coefficients_display()
             else:
                 messagebox.showerror("Ошибка", "Не удалось загрузить файл коэффициентов")
@@ -184,12 +201,29 @@ class LocomotiveSelectorDialog:
         self.refresh_coefficients_display()
     
     def refresh_coefficients_display(self):
-        for t in self.nb.tabs():
-            self.nb.forget(t)
+        # Сохраняем текущий выбор
+        current_selection = {}
+        for (s, n), v in self.cv.items():
+            current_selection[(s, n)] = v.get()
+        
+        # Полностью пересоздаем все вкладки для обновления коэффициентов
+        for tab_id in self.nb.tabs():
+            self.nb.forget(tab_id)
+        
+        # Очищаем старые данные
         self.cv.clear()
         self.sv.clear()
+        
+        # Создаем вкладки заново с обновленными коэффициентами
         self.create_series_tabs()
-        self.load_current_selection()
+        
+        # Восстанавливаем выбор
+        for (s, n), selected in current_selection.items():
+            if (s, n) in self.cv:
+                self.cv[(s, n)].set(selected)
+        
+        self.update_series_checkboxes()
+        self.update_selection_count()
     
     def on_use_coefficients_changed(self):
         if self.uc.get() and not self.cm.data:
@@ -212,6 +246,7 @@ class LocomotiveSelectorDialog:
         self.res = {
             'selected_locomotives': sel,
             'use_coefficients': self.uc.get(),
+            'exclude_low_work': self.exclude_low_work.get(),
             'coefficients_manager': self.cm
         }
         self.d.destroy()

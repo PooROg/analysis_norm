@@ -26,10 +26,14 @@ class NormsAnalyzerGUI:
         self.lf = None
         self.cm = LocomotiveCoefficientsManager()
         self.uc = False
+        self.elw = False  # exclude_low_work
         self.rf = 'Processed_Routes.xlsx'
         self.nf = 'Нормы участков.xlsx'
         self.create_widgets()
         self.setup_styles()
+        
+        # Привязываем обработчик закрытия окна
+        self.r.protocol("WM_DELETE_WINDOW", self.on_closing)
     
     def setup_styles(self):
         s = ttk.Style()
@@ -163,25 +167,100 @@ class NormsAnalyzerGUI:
         sec = self.sv.get()
         if not sec:
             return
-        fig, st, err = self.a.analyze_single_section(sec)
-        if err:
-            messagebox.showerror("Ошибка", err)
-            return
+        
+        # Передаем фильтр локомотивов и настройки коэффициентов в анализатор
+        if hasattr(self, 'lf') and self.lf:
+            # Создаем временный анализатор для учета фильтров
+            sr = self.a.rdf[self.a.rdf['Наименование участка'] == sec].copy()
+            if sr.empty:
+                messagebox.showerror("Ошибка", "Нет маршрутов для участка")
+                return
+            
+            ra, nf = self.a.analyze_section_with_filters(
+                sec, sr, self.a.nd[sec], 
+                self.lf, 
+                getattr(self, 'cm', None), 
+                getattr(self, 'uc', False)
+            )
+            
+            if ra is None or ra.empty:
+                messagebox.showwarning("Предупреждение", "Нет данных после применения фильтров")
+                return
+            
+            fig = self.a.create_interactive_plot(sec, ra, nf)
+        else:
+            fig, st, err = self.a.analyze_single_section(sec)
+            if err:
+                messagebox.showerror("Ошибка", err)
+                return
+        
         self.cp = fig
         self.th = tempfile.mktemp(suffix='.html')
         plot(fig, filename=self.th, auto_open=False)
         self.vb['state'] = 'normal'
         self.eeb['state'] = 'normal'
         self.epb['state'] = 'normal'
+        
+        # Пересчитываем статистику для отфильтрованных данных
+        if hasattr(self, 'lf') and self.lf:
+            vr = ra[ra['Статус'] != 'Не определен']
+            ds = {
+                'economy_strong': len(vr[vr['Отклонение, %'] >= 30]),
+                'economy_medium': len(vr[(vr['Отклонение, %'] >= 20) & (vr['Отклонение, %'] < 30)]),
+                'economy_weak': len(vr[(vr['Отклонение, %'] >= 5) & (vr['Отклонение, %'] < 20)]),
+                'normal': len(vr[(vr['Отклонение, %'] >= -5) & (vr['Отклонение, %'] < 5)]),
+                'overrun_weak': len(vr[(vr['Отклонение, %'] >= -20) & (vr['Отклонение, %'] < -5)]),
+                'overrun_medium': len(vr[(vr['Отклонение, %'] >= -30) & (vr['Отклонение, %'] < -20)]),
+                'overrun_strong': len(vr[vr['Отклонение, %'] < -30])
+            }
+            st = {
+                'total': len(ra),
+                'processed': len(vr),
+                'economy': ds['economy_strong'] + ds['economy_medium'] + ds['economy_weak'],
+                'normal': ds['normal'],
+                'overrun': ds['overrun_weak'] + ds['overrun_medium'] + ds['overrun_strong'],
+                'mean_deviation': vr['Отклонение, %'].mean() if len(vr) > 0 else 0,
+                'detailed_stats': ds
+            }
+        
         self.update_statistics(st)
         self.update_plot_info(sec, st)
         self.log(f"Анализ участка {sec} завершен")
     
     def open_locomotive_filter(self):
         d = LocomotiveSelectorDialog(self.r, self.lf, self.cm)
+        
+        # Добавляем отладочную информацию о данных
+        if self.a and self.a.rdf is not None:
+            print("\n=== ОТЛАДКА ДАННЫХ ЛОКОМОТИВОВ ===")
+            if 'Серия локомотива' in self.a.rdf.columns:
+                unique_series = self.a.rdf['Серия локомотива'].unique()
+                print(f"Серии в данных маршрутов: {list(unique_series)}")
+                
+                # Показываем примеры номеров для каждой серии
+                for series in unique_series[:3]:  # Первые 3 серии
+                    if pd.notna(series):
+                        nums = self.a.rdf[self.a.rdf['Серия локомотива'] == series]['Номер локомотива'].unique()[:5]
+                        print(f"Серия {series}, примеры номеров: {list(nums)}")
+            else:
+                print("Колонка 'Серия локомотива' не найдена в данных!")
+                print(f"Доступные колонки: {list(self.a.rdf.columns)}")
+            
+            # Информация о коэффициентах
+            if self.cm.coef:
+                coef_series = list(set(s for s, n in self.cm.coef.keys()))
+                print(f"Серии в коэффициентах: {coef_series}")
+                for series in coef_series:
+                    nums = [n for s, n in self.cm.coef.keys() if s == series][:5]
+                    print(f"Серия {series}, примеры номеров: {nums}")
+            else:
+                print("Коэффициенты не загружены")
+            print("=" * 40)
+        
         self.r.wait_window(d.d)
         if d.res:
             self.uc = d.res['use_coefficients']
+            self.elw = d.res.get('exclude_low_work', False)
             self.cm = d.res['coefficients_manager']
             self.fil.config(text=f"Выбрано локомотивов: {len(d.res['selected_locomotives'])}")
             self.analyze_section()
@@ -194,9 +273,9 @@ class NormsAnalyzerGUI:
         en = self.a.nd.get(sec)
         ed = NormEditorDialog(self.r, sec, en)
         self.r.wait_window(ed.d)
-        if ed.res == 'apply' and ed.en:
-            self.a.nd[sec] = ed.en
-            self.show_comparison(sec, en, ed.en)
+        if ed.res == 'apply' and ed.ed:
+            self.a.nd[sec] = ed.ed
+            self.show_comparison(sec, en, ed.ed)
             self.analyze_section()
         else:
             self.log("Редактирование норм отменено")
@@ -342,4 +421,3 @@ class NormsAnalyzerGUI:
                 os.remove(self.th)
             except:
                 pass
-        self.r.destroy()
