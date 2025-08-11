@@ -229,34 +229,6 @@ class NormsAnalyzerGUI:
     
     def open_locomotive_filter(self):
         d = LocomotiveSelectorDialog(self.r, self.lf, self.cm)
-        
-        # Добавляем отладочную информацию о данных
-        if self.a and self.a.rdf is not None:
-            print("\n=== ОТЛАДКА ДАННЫХ ЛОКОМОТИВОВ ===")
-            if 'Серия локомотива' in self.a.rdf.columns:
-                unique_series = self.a.rdf['Серия локомотива'].unique()
-                print(f"Серии в данных маршрутов: {list(unique_series)}")
-                
-                # Показываем примеры номеров для каждой серии
-                for series in unique_series[:3]:  # Первые 3 серии
-                    if pd.notna(series):
-                        nums = self.a.rdf[self.a.rdf['Серия локомотива'] == series]['Номер локомотива'].unique()[:5]
-                        print(f"Серия {series}, примеры номеров: {list(nums)}")
-            else:
-                print("Колонка 'Серия локомотива' не найдена в данных!")
-                print(f"Доступные колонки: {list(self.a.rdf.columns)}")
-            
-            # Информация о коэффициентах
-            if self.cm.coef:
-                coef_series = list(set(s for s, n in self.cm.coef.keys()))
-                print(f"Серии в коэффициентах: {coef_series}")
-                for series in coef_series:
-                    nums = [n for s, n in self.cm.coef.keys() if s == series][:5]
-                    print(f"Серия {series}, примеры номеров: {nums}")
-            else:
-                print("Коэффициенты не загружены")
-            print("=" * 40)
-        
         self.r.wait_window(d.d)
         if d.res:
             self.uc = d.res['use_coefficients']
@@ -416,8 +388,19 @@ class NormsAnalyzerGUI:
                 messagebox.showerror("Ошибка", f"Не удалось экспортировать график:\n{str(e)}")
     
     def on_closing(self):
+        """Обработчик закрытия окна - ИСПРАВЛЕНО"""
+        # Удаляем временные файлы
         if self.th and os.path.exists(self.th):
             try:
                 os.remove(self.th)
             except:
                 pass
+        
+        # ВАЖНО: Закрываем все открытые диалоги и уничтожаем главное окно
+        for widget in self.r.winfo_children():
+            if isinstance(widget, tk.Toplevel):
+                widget.destroy()
+        
+        # Уничтожаем главное окно - это исправляет проблему с незакрывающейся программой
+        self.r.quit()
+        self.r.destroy()
