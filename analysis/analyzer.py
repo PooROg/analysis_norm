@@ -165,87 +165,146 @@ class InteractiveNormsAnalyzer:
                             continue
         return self.analyze_section(sn, rdf, norms)
     
-    def create_interactive_plot(self, sn, rdf, nf):
-        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.1,
-                            subplot_titles=('Удельный расход', 'Отклонения от нормы'))
-        for ni, ninfo in nf.items():
-            pts = ninfo['points']
-            xp = [p[0] for p in pts]
-            yp = [p[1] for p in pts]
-            inf = ninfo['function']
-            xr = np.linspace(min(xp), max(xp), 100)
-            yi = inf(xr)
+    def create_interactive_plot(self, sn, ra, nf):
+        section_name = sn
+        routes = ra
+        norms = nf
+        
+        fig = make_subplots(
+            rows=2, cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.05,
+            row_heights=[0.6, 0.4],
+            subplot_titles=(
+                f"Нормы расхода для участка: {section_name}",
+                "Отклонение фактического расхода от нормы"
+            )
+        )
+
+        # Отрисовка кривых норм на верхнем графике
+        for ni, nf_item in norms.items():
+            pts = nf_item['points']
+            xv = [p[0] for p in pts]
+            yv = [p[1] for p in pts]
+            x_interp = np.linspace(min(xv), max(xv), 100)
+            nfunc = nf_item['function']
+            y_interp = nfunc(x_interp)
             fig.add_trace(
                 go.Scatter(
-                    x=xr, y=yi, mode='lines',
+                    x=x_interp,
+                    y=y_interp,
+                    mode='lines',
                     name=f'Норма №{ni}',
-                    line=dict(color='blue', width=2),
-                    legendgroup=f'norm{ni}'
+                    line=dict(width=2),
+                    hovertemplate='Нажатие: %{x:.2f} т/ось<br>Норма: %{y:.1f} кВт·ч/10⁴ ткм'
                 ), row=1, col=1
             )
-            pc = ['black'] * len(pts)
-            ht = [f"Точка нормы №{ni}<br>Нажатие: {x:.2f} т/ось<br>Расход: {y:.2f} кВт·ч" for x, y in pts]
             fig.add_trace(
                 go.Scatter(
-                    x=xp, y=yp, mode='markers',
-                    name=f'Точки нормы №{ni}',
-                    marker=dict(color=pc, size=8, opacity=0.8, line=dict(color='black', width=0.5)),
-                    legendgroup=f'norm{ni}',
-                    showlegend=False,
-                    hovertemplate='%{text}',
-                    text=ht
+                    x=xv,
+                    y=yv,
+                    mode='markers',
+                    marker=dict(symbol='square', size=8, color='black'),
+                    name=f'Опорные точки нормы №{ni}',
+                    hovertemplate='Опорная точка<br>Нажатие: %{x:.2f} т/ось<br>Норма: %{y:.1f} кВт·ч/10⁴ ткм'
                 ), row=1, col=1
             )
-        vr = rdf[rdf['Статус'] != 'Не определен']
-        if len(vr) > 0:
-            dg = {
-                'Экономия +30% и более': vr[vr['Отклонение, %'] >= 30],
-                'Экономия +20% до +30%': vr[(vr['Отклонение, %'] >= 20) & (vr['Отклонение, %'] < 30)],
-                'Экономия +5% до +20%': vr[(vr['Отклонение, %'] >= 5) & (vr['Отклонение, %'] < 20)],
-                'Норма -5% до +5%': vr[(vr['Отклонение, %'] >= -5) & (vr['Отклонение, %'] < 5)],
-                'Перерасход -5% до -20%': vr[(vr['Отклонение, %'] >= -20) & (vr['Отклонение, %'] < -5)],
-                'Перерасход -20% до -30%': vr[(vr['Отклонение, %'] >= -30) & (vr['Отклонение, %'] < -20)],
-                'Перерасход -30% и менее': vr[vr['Отклонение, %'] < -30]
-            }
-            gc = {
-                'Экономия +30% и более': '#7C3AED',
-                'Экономия +20% до +30%': '#9333EA',
-                'Экономия +5% до +20%': '#06B6D4',
-                'Норма -5% до +5%': '#22C55E',
-                'Перерасход -5% до -20%': '#EAB308',
-                'Перерасход -20% до -30%': '#F97316',
-                'Перерасход -30% и менее': '#DC2626'
-            }
-            for gn, gd in dg.items():
-                if len(gd) > 0:
-                    ht = []
-                    for _, r in gd.iterrows():
-                        txt = f"Маршрут №{r['Номер маршрута']}<br>Дата: {r['Дата маршрута']}<br>Норма №{r['Номер нормы']}<br>"
-                        if 'Серия локомотива' in r and pd.notna(r['Серия локомотива']):
-                            txt += f"Локомотив: {r['Серия локомотива']} "
-                        if 'Номер локомотива' in r and pd.notna(r['Номер локомотива']):
-                            txt += f"№{r['Номер локомотива']}<br>"
-                        else:
-                            txt += "<br>"
-                        txt += f"Нажатие: {r['Нажатие на ось']:.2f} т/ось<br>Отклонение: {r['Отклонение, %']:.1f}%"
-                        ht.append(txt)
-                    fig.add_trace(
-                        go.Scatter(
-                            x=gd['Нажатие на ось'], y=gd['Отклонение, %'],
-                            mode='markers',
-                            name=f'{gn} ({len(gd)})',
-                            marker=dict(color=gc[gn], size=10, opacity=0.8, line=dict(color='black', width=0.5)),
-                            hovertemplate='%{text}',
-                            text=ht
-                        ), row=2, col=1
-                    )
-            xr = [vr['Нажатие на ось'].min() - 1, vr['Нажатие на ось'].max() + 1]
-            fig.add_trace(go.Scatter(x=xr, y=[5, 5], mode='lines', line=dict(color='#22C55E', dash='dash', width=2), showlegend=False, hoverinfo='skip'), row=2, col=1)
-            fig.add_trace(go.Scatter(x=xr, y=[-5, -5], mode='lines', line=dict(color='#22C55E', dash='dash', width=2), showlegend=False, hoverinfo='skip'), row=2, col=1)
-            fig.add_trace(go.Scatter(x=xr, y=[20, 20], mode='lines', line=dict(color='#F97316', dash='dot', width=2), showlegend=False, hoverinfo='skip'), row=2, col=1)
-            fig.add_trace(go.Scatter(x=xr, y=[-20, -20], mode='lines', line=dict(color='#F97316', dash='dot', width=2), showlegend=False, hoverinfo='skip'), row=2, col=1)
-            fig.add_trace(go.Scatter(x=xr, y=[0, 0], mode='lines', line=dict(color='black', width=1), showlegend=False, hoverinfo='skip'), row=2, col=1)
-            fig.add_trace(go.Scatter(x=xr + xr[::-1], y=[-5, -5, 5, 5], fill='toself', fillcolor='rgba(34, 197, 94, 0.1)', line=dict(color='rgba(255,255,255,0)'), showlegend=False, hoverinfo='skip'), row=2, col=1)
+
+        # Определение vr один раз
+        vr = routes[routes['Статус'] != 'Не определен']
+
+        # Добавление фактических точек маршрутов на верхний график
+        for _, r in vr.iterrows():
+            # Цвет точки в зависимости от отклонения (для согласованности с нижним графиком)
+            if r['Отклонение, %'] >= 30:
+                color = '#7C3AED'  # Экономия сильная
+            elif r['Отклонение, %'] >= 20:
+                color = '#9333EA'
+            elif r['Отклонение, %'] >= 5:
+                color = '#06B6D4'
+            elif r['Отклонение, %'] >= -5:
+                color = '#22C55E'  # Норма
+            elif r['Отклонение, %'] >= -20:
+                color = '#EAB308'  # Перерасход слабый
+            elif r['Отклонение, %'] >= -30:
+                color = '#F97316'
+            else:
+                color = '#DC2626'  # Перерасход сильный
+            
+            hover_text = (
+                f"Маршрут №{r['Номер маршрута']}<br>"
+                f"Дата: {r['Дата маршрута']}<br>"
+                f"Локомотив: {r.get('Серия локомотива', '')} №{r.get('Номер локомотива', '')}<br>"
+                f"Нажатие: {r['Нажатие на ось']:.2f} т/ось<br>"
+                f"Факт: {r['Фактический удельный']:.1f}<br>"
+                f"Норма: {r['Норма интерполированная']:.1f}<br>"
+                f"Отклонение: {r['Отклонение, %']:.1f}%"
+            )
+            
+            fig.add_trace(
+                go.Scatter(
+                    x=[r['Нажатие на ось']],
+                    y=[r['Фактический удельный']],
+                    mode='markers',
+                    marker=dict(color=color, size=8, opacity=0.8, line=dict(color='black', width=0.5)),
+                    hovertemplate=hover_text,
+                    showlegend=False
+                ), row=1, col=1
+            )
+
+        # Группировка для нижнего графика
+        dg = {
+            'Экономия +30% и более': vr[vr['Отклонение, %'] >= 30],
+            'Экономия +20% до +30%': vr[(vr['Отклонение, %'] >= 20) & (vr['Отклонение, %'] < 30)],
+            'Экономия +5% до +20%': vr[(vr['Отклонение, %'] >= 5) & (vr['Отклонение, %'] < 20)],
+            'Норма -5% до +5%': vr[(vr['Отклонение, %'] >= -5) & (vr['Отклонение, %'] < 5)],
+            'Перерасход -5% до -20%': vr[(vr['Отклонение, %'] >= -20) & (vr['Отклонение, %'] < -5)],
+            'Перерасход -20% до -30%': vr[(vr['Отклонение, %'] >= -30) & (vr['Отклонение, %'] < -20)],
+            'Перерасход -30% и менее': vr[vr['Отклонение, %'] < -30]
+        }
+        gc = {
+            'Экономия +30% и более': '#7C3AED',
+            'Экономия +20% до +30%': '#9333EA',
+            'Экономия +5% до +20%': '#06B6D4',
+            'Норма -5% до +5%': '#22C55E',
+            'Перерасход -5% до -20%': '#EAB308',
+            'Перерасход -20% до -30%': '#F97316',
+            'Перерасход -30% и менее': '#DC2626'
+        }
+        for gn, gd in dg.items():
+            if len(gd) > 0:
+                ht = []
+                for _, r in gd.iterrows():
+                    txt = f"Маршрут №{r['Номер маршрута']}<br>Дата: {r['Дата маршрута']}<br>Норма №{r['Номер нормы']}<br>"
+                    if 'Серия локомотива' in r and pd.notna(r['Серия локомотива']):
+                        txt += f"Локомотив: {r['Серия локомотива']} "
+                    if 'Номер локомотива' in r and pd.notna(r['Номер локомотива']):
+                        txt += f"№{r['Номер локомотива']}<br>"
+                    else:
+                        txt += "<br>"
+                    txt += f"Нажатие: {r['Нажатие на ось']:.2f} т/ось<br>Отклонение: {r['Отклонение, %']:.1f}%"
+                    ht.append(txt)
+                fig.add_trace(
+                    go.Scatter(
+                        x=gd['Нажатие на ось'], y=gd['Отклонение, %'],
+                        mode='markers',
+                        name=f'{gn} ({len(gd)})',
+                        marker=dict(color=gc[gn], size=10, opacity=0.8, line=dict(color='black', width=0.5)),
+                        hovertemplate='%{text}',
+                        text=ht
+                    ), row=2, col=1
+                )
+
+        # Добавление линий границ на нижний график
+        xr = [vr['Нажатие на ось'].min() - 1, vr['Нажатие на ось'].max() + 1]
+        fig.add_trace(go.Scatter(x=xr, y=[5, 5], mode='lines', line=dict(color='#22C55E', dash='dash', width=2), showlegend=False, hoverinfo='skip'), row=2, col=1)
+        fig.add_trace(go.Scatter(x=xr, y=[-5, -5], mode='lines', line=dict(color='#22C55E', dash='dash', width=2), showlegend=False, hoverinfo='skip'), row=2, col=1)
+        fig.add_trace(go.Scatter(x=xr, y=[20, 20], mode='lines', line=dict(color='#F97316', dash='dot', width=2), showlegend=False, hoverinfo='skip'), row=2, col=1)
+        fig.add_trace(go.Scatter(x=xr, y=[-20, -20], mode='lines', line=dict(color='#F97316', dash='dot', width=2), showlegend=False, hoverinfo='skip'), row=2, col=1)
+        fig.add_trace(go.Scatter(x=xr, y=[0, 0], mode='lines', line=dict(color='black', width=1), showlegend=False, hoverinfo='skip'), row=2, col=1)
+        fig.add_trace(go.Scatter(x=xr + xr[::-1], y=[-5, -5, 5, 5], fill='toself', fillcolor='rgba(34, 197, 94, 0.1)', line=dict(color='rgba(255,255,255,0)'), showlegend=False, hoverinfo='skip'), row=2, col=1)
+
+        # Обновление осей и layout
         fig.update_xaxes(title_text="Нажатие на ось, т/ось", row=1, col=1)
         fig.update_yaxes(title_text="Удельный расход, кВт·ч/10⁴ ткм брутто", row=1, col=1)
         fig.update_xaxes(title_text="Нажатие на ось, т/ось", row=2, col=1)

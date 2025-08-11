@@ -21,19 +21,32 @@ class LocomotiveCoefficientsManager:
             self.coef = {}
             ef = pd.ExcelFile(fp)
             for sn in ef.sheet_names:
-                df = pd.read_excel(fp, sheet_name=sn)
+                # Пропускаем первые 3 строки (фильтры, пустая, субзаголовки), header из 4-й строки
+                df = pd.read_excel(fp, sheet_name=sn, skiprows=3)
                 lnc = None
                 pc = None
+                # Поиск колонок в заголовках
                 for c in df.columns:
                     if 'Завод. номер секции ТПС' in str(c) or 'номер' in str(c).lower():
                         lnc = c
                     if 'Процент' in str(c) or 'процент' in str(c).lower():
                         pc = c
                 if lnc and pc:
+                    # Извлечение серии из первой строки оригинального файла (фильтр)
+                    # Читаем без skip для парсинга фильтра
+                    filter_df = pd.read_excel(fp, sheet_name=sn, header=None)
+                    filter_text = str(filter_df.iloc[0, 0])  # row1
+                    series_name = 'ВЛ80С'  # По умолчанию
+                    if 'электровоз.ВЛ80С' in filter_text:
+                        series_name = 'ВЛ80С'
+                    # Или парсите динамически: series_name = filter_text.split('электровоз.')[1].split(' ')[0] if 'электровоз.' in filter_text else sn
+                    
                     vd = []
                     for _, r in df.iterrows():
                         try:
                             lns = str(r[lnc]).strip()
+                            if not lns or pd.isna(lns):
+                                continue
                             ln = int(lns.lstrip('0')) if lns.lstrip('0') else 0
                             pv = r[pc]
                             if pd.notna(pv):
@@ -41,17 +54,20 @@ class LocomotiveCoefficientsManager:
                                     pv = float(pv.replace('%', '').replace(',', '.'))
                                 else:
                                     pv = float(pv)
-                                co = pv / 100.0
+                                # Поскольку значения ~1 (e.g., 1.06), предполагаем, что pv уже коэффициент (не /100)
+                                # Если в файле 107 для 107%, добавьте co = pv / 100
+                                # Но по данным: co = pv (1.06 = 106%)
+                                co = pv  # Измените на pv / 100, если значения >10
                                 vd.append({
                                     'number': ln,
                                     'coefficient': co,
-                                    'deviation_percent': pv - 100
+                                    'deviation_percent': (co - 1) * 100  # Отклонение в %
                                 })
-                                self.coef[(sn, ln)] = co
+                                self.coef[(series_name, ln)] = co
                         except (ValueError, TypeError):
                             continue
                     if vd:
-                        self.data[sn] = vd
+                        self.data[series_name] = vd
             return bool(self.data)
         except Exception as e:
             print(f"Ошибка загрузки коэффициентов: {e}")
