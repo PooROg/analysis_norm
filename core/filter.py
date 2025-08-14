@@ -1,96 +1,263 @@
 # core/filter.py
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""
+Оптимизированный фильтр локомотивов с Python 3.12 features
+Использует vectorized operations и modern type system
+"""
+
 import pandas as pd
-from typing import List, Tuple, Dict
+from dataclasses import dataclass
+from typing import Protocol
+from functools import lru_cache, cached_property
+import logging
+
+logger = logging.getLogger(__name__)
+
+# Python 3.12 enhanced type system
+type LocomotiveID = tuple[str, int]
+type LocomotiveStats = dict[str, int | float]
+
+@dataclass(slots=True, frozen=True)
+class LocomotiveInfo:
+    """Immutable locomotive information with slots optimization."""
+    series: str
+    number: int
+    
+    def __post_init__(self):
+        if not self.series or self.number <= 0:
+            raise ValueError("Invalid locomotive data")
+    
+    @property
+    def display_name(self) -> str:
+        """Human-readable locomotive name."""
+        return f"{self.series} №{self.number}"
+
+class DataFrameProcessor(Protocol):
+    """Protocol for DataFrame processing strategies."""
+    def process(self, df: pd.DataFrame) -> pd.DataFrame: ...
 
 class LocomotiveFilter:
-    """Фильтр для выбора локомотивов"""
+    """Optimized locomotive filter with vectorized operations and caching."""
     
-    def __init__(self, df: pd.DataFrame):
-        self.df = df
-        self.avl = self._extract_locomotives()
-        self.sel = set(self.avl)  # По умолчанию все выбраны
+    def __init__(self, routes_df: pd.DataFrame):
+        self.routes_df = routes_df
+        self._validate_dataframe()
+        self.selected: set[LocomotiveID] = set(self.available_locomotives)
+        logger.info(f"Initialized filter with {len(self.available_locomotives)} locomotives")
+    
+    def _validate_dataframe(self) -> None:
+        """Validate required columns exist."""
+        required_cols = {'Серия локомотива', 'Номер локомотива'}
+        if not required_cols.issubset(self.routes_df.columns):
+            missing = required_cols - set(self.routes_df.columns)
+            raise ValueError(f"Missing required columns: {missing}")
+    
+    @cached_property
+    def available_locomotives(self) -> frozenset[LocomotiveID]:
+        """Extract and cache unique locomotives using vectorized operations."""
+        try:
+            # Vectorized filtering for valid data
+            valid_mask = (
+                self.routes_df['Серия локомотива'].notna() & 
+                self.routes_df['Номер локомотива'].notna()
+            )
+            valid_data = self.routes_df[valid_mask].copy()
+            
+            if valid_data.empty:
+                logger.warning("No valid locomotive data found")
+                return frozenset()
+            
+            # Vectorized processing
+            valid_data['series_clean'] = valid_data['Серия локомотива'].astype(str)
+            valid_data['number_clean'] = (
+                valid_data['Номер локомотива']
+                .astype(str)
+                .str.lstrip('0')
+                .replace('', '0')
+                .astype(int)
+            )
+            
+            # Extract unique locomotives
+            locomotives = set()
+            for _, row in valid_data[['series_clean', 'number_clean']].drop_duplicates().iterrows():
+                if row['number_clean'] > 0:
+                    locomotives.add((row['series_clean'], row['number_clean']))
+            
+            result = frozenset(locomotives)
+            logger.info(f"Extracted {len(result)} unique locomotives")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Failed to extract locomotives: {e}")
+            return frozenset()
+    
+    @cached_property
+    def locomotives_by_series(self) -> dict[str, list[int]]:
+        """Group locomotives by series with caching."""
+        series_dict = {}
+        for series, number in self.available_locomotives:
+            if series not in series_dict:
+                series_dict[series] = []
+            series_dict[series].append(number)
         
-    def _extract_locomotives(self) -> List[Tuple[str, int]]:
-        loc = []
-        if 'Серия локомотива' in self.df.columns and 'Номер локомотива' in self.df.columns:
-            for _, r in self.df.iterrows():
-                s = r.get('Серия локомотива', '')
-                n = r.get('Номер локомотива', 0)
-                if pd.notna(s) and pd.notna(n):
-                    try:
-                        if isinstance(n, str):
-                            n = int(n.lstrip('0')) if n.strip().lstrip('0') else 0
-                        else:
-                            n = int(n)
-                        l = (str(s), n)
-                        if l not in loc:
-                            loc.append(l)
-                    except (ValueError, TypeError):
-                        continue
-        loc.sort(key=lambda x: (x[0], x[1]))
-        return loc
+        # Sort numbers within each series
+        for series in series_dict:
+            series_dict[series].sort()
+        
+        return series_dict
     
-    def get_locomotives_by_series(self) -> Dict[str, List[int]]:
-        sd = {}
-        for s, n in self.avl:
-            if s not in sd:
-                sd[s] = []
-            sd[s].append(n)
-        for s in sd:
-            sd[s].sort()
-        return sd
+    def set_selected_locomotives(self, selected: list[LocomotiveID] | set[LocomotiveID]) -> None:
+        """Set selected locomotives with validation."""
+        if isinstance(selected, list):
+            selected = set(selected)
+        
+        # Validate selection
+        invalid = selected - self.available_locomotives
+        if invalid:
+            logger.warning(f"Ignoring invalid locomotives: {invalid}")
+            selected -= invalid
+        
+        self.selected = selected
+        logger.info(f"Selected {len(selected)} locomotives")
     
-    def set_selected_locomotives(self, sel: List[Tuple[str, int]]):
-        self.sel = set(sel)
-    
-    def toggle_locomotive(self, s: str, n: int):
-        l = (s, n)
-        if l in self.sel:
-            self.sel.remove(l)
+    def toggle_locomotive(self, series: str, number: int) -> bool:
+        """Toggle locomotive selection state."""
+        locomotive_id = (series, number)
+        if locomotive_id not in self.available_locomotives:
+            logger.warning(f"Cannot toggle unknown locomotive: {locomotive_id}")
+            return False
+        
+        if locomotive_id in self.selected:
+            self.selected.remove(locomotive_id)
+            return False
         else:
-            self.sel.add(l)
+            self.selected.add(locomotive_id)
+            return True
     
-    def select_all_in_series(self, s: str):
-        for se, n in self.avl:
-            if se == s:
-                self.sel.add((se, n))
+    def select_all_in_series(self, series: str) -> int:
+        """Select all locomotives in series."""
+        count = 0
+        for ser, num in self.available_locomotives:
+            if ser == series:
+                self.selected.add((ser, num))
+                count += 1
+        
+        logger.info(f"Selected {count} locomotives in series {series}")
+        return count
     
-    def deselect_all_in_series(self, s: str):
-        for se, n in self.avl:
-            if se == s:
-                self.sel.discard((se, n))
+    def deselect_all_in_series(self, series: str) -> int:
+        """Deselect all locomotives in series."""
+        count = 0
+        to_remove = set()
+        for ser, num in self.selected:
+            if ser == series:
+                to_remove.add((ser, num))
+                count += 1
+        
+        self.selected -= to_remove
+        logger.info(f"Deselected {count} locomotives in series {series}")
+        return count
     
-    def select_all(self):
-        self.sel = set(self.avl)
+    def select_all(self) -> None:
+        """Select all available locomotives."""
+        self.selected = set(self.available_locomotives)
+        logger.info("Selected all locomotives")
     
-    def deselect_all(self):
-        self.sel = set()
+    def deselect_all(self) -> None:
+        """Deselect all locomotives."""
+        self.selected.clear()
+        logger.info("Deselected all locomotives")
     
     def filter_routes(self, df: pd.DataFrame) -> pd.DataFrame:
-        if not self.sel:
-            return df.iloc[0:0]
-        m = pd.Series([False] * len(df))
-        for i, r in df.iterrows():
-            s = r.get('Серия локомотива', '')
-            n = r.get('Номер локомотива', 0)
-            if pd.notna(s) and pd.notna(n):
-                try:
-                    if isinstance(n, str):
-                        n = int(n.lstrip('0')) if n.strip().lstrip('0') else 0
-                    else:
-                        n = int(n)
-                    if (str(s), n) in self.sel:
-                        m[i] = True
-                except (ValueError, TypeError):
-                    continue
-        return df[m]
+        """Filter routes using vectorized operations for performance."""
+        if not self.selected:
+            logger.warning("No locomotives selected - returning empty DataFrame")
+            return df.iloc[0:0].copy()
+        
+        try:
+            # Create vectorized boolean mask
+            mask = pd.Series([False] * len(df), index=df.index)
+            
+            # Group selected locomotives by series for efficient processing
+            selected_by_series = {}
+            for series, number in self.selected:
+                if series not in selected_by_series:
+                    selected_by_series[series] = set()
+                selected_by_series[series].add(number)
+            
+            # Vectorized filtering by series
+            for series, numbers in selected_by_series.items():
+                series_mask = df['Серия локомотива'].astype(str) == series
+                
+                # Handle number matching with vectorized operations
+                df_numbers = (
+                    df['Номер локомотива']
+                    .astype(str)
+                    .str.lstrip('0')
+                    .replace('', '0')
+                    .astype(int)
+                )
+                number_mask = df_numbers.isin(numbers)
+                
+                mask |= (series_mask & number_mask)
+            
+            filtered_df = df[mask].copy()
+            logger.info(f"Filtered {len(filtered_df)} routes from {len(df)} total")
+            return filtered_df
+            
+        except Exception as e:
+            logger.error(f"Route filtering failed: {e}")
+            return df.iloc[0:0].copy()
     
-    def get_selection_statistics(self) -> Dict:
+    @lru_cache(maxsize=64)
+    def get_series_statistics(self, series: str) -> LocomotiveStats:
+        """Get cached statistics for a series."""
+        series_locomotives = [num for ser, num in self.available_locomotives if ser == series]
+        selected_in_series = [num for ser, num in self.selected if ser == series]
+        
         return {
-            'total_available': len(self.avl),
-            'total_selected': len(self.sel),
-            'series_count': len(set(s for s, _ in self.avl)),
-            'selected_series': len(set(s for s, _ in self.sel))
+            'total': len(series_locomotives),
+            'selected': len(selected_in_series),
+            'selection_percentage': len(selected_in_series) / len(series_locomotives) * 100 if series_locomotives else 0,
+            'min_number': min(series_locomotives) if series_locomotives else 0,
+            'max_number': max(series_locomotives) if series_locomotives else 0
         }
+    
+    def get_selection_statistics(self) -> LocomotiveStats:
+        """Get overall selection statistics."""
+        total_available = len(self.available_locomotives)
+        total_selected = len(self.selected)
+        
+        return {
+            'total_available': total_available,
+            'total_selected': total_selected,
+            'selection_percentage': (total_selected / total_available * 100) if total_available else 0,
+            'series_count': len(set(series for series, _ in self.available_locomotives)),
+            'selected_series_count': len(set(series for series, _ in self.selected)),
+            'unselected_count': total_available - total_selected
+        }
+    
+    def export_selection(self) -> list[dict[str, str | int]]:
+        """Export current selection for external use."""
+        return [
+            {'series': series, 'number': number}
+            for series, number in sorted(self.selected)
+        ]
+    
+    def import_selection(self, selection_data: list[dict[str, str | int]]) -> bool:
+        """Import selection from external data."""
+        try:
+            new_selection = set()
+            for item in selection_data:
+                locomotive_id = (str(item['series']), int(item['number']))
+                if locomotive_id in self.available_locomotives:
+                    new_selection.add(locomotive_id)
+            
+            self.selected = new_selection
+            logger.info(f"Imported selection of {len(new_selection)} locomotives")
+            return True
+            
+        except (KeyError, ValueError, TypeError) as e:
+            logger.error(f"Failed to import selection: {e}")
+            return False
