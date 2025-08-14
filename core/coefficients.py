@@ -4,6 +4,7 @@
 import pandas as pd
 import numpy as np
 from typing import Dict, List, Tuple, Optional
+import re
 
 class LocomotiveCoefficientsManager:
     """Менеджер коэффициентов расхода локомотивов"""
@@ -12,200 +13,294 @@ class LocomotiveCoefficientsManager:
         self.file = None
         self.data = {}
         self.coef = {}  # {(серия, номер): коэффициент}
+        self.debug_log = []  # Для отладки
         
+    def log_debug(self, message):
+        """Добавление сообщения в лог отладки"""
+        self.debug_log.append(message)
+        print(f"[DEBUG] {message}")
+    
+    def normalize_series(self, series: str) -> str:
+        """Нормализация названия серии локомотива"""
+        # Извлекаем только буквы и цифры
+        normalized = re.sub(r'[^А-ЯA-Zа-яa-z0-9]', '', str(series).upper())
+        self.log_debug(f"Нормализация серии: '{series}' -> '{normalized}'")
+        return normalized
+    
     def load_coefficients(self, fp: str, min_work_threshold: float = 0) -> bool:
-        """Загрузка коэффициентов из Excel файла"""
+        """Загрузка коэффициентов из Excel файла (все листы)"""
         try:
             self.file = fp
             self.data = {}
             self.coef = {}
+            self.debug_log = []
             
-            # Читаем файл как данные без заголовков для анализа структуры
-            df_raw = pd.read_excel(fp, header=None)
+            self.log_debug(f"Начало загрузки файла: {fp}")
+            self.log_debug(f"Порог минимальной работы: {min_work_threshold}")
             
-            # Извлекаем серию из фильтра в первой строке
-            filter_text = str(df_raw.iloc[0, 0]) if len(df_raw) > 0 else ""
+            # Читаем все листы файла
+            excel_file = pd.ExcelFile(fp)
+            total_processed = 0
             
-            series_name = 'ВЛ80С'  # По умолчанию
-            if 'электровоз.' in filter_text:
+            self.log_debug(f"Найдено листов в файле: {len(excel_file.sheet_names)}")
+            
+            for sheet_name in excel_file.sheet_names:
+                self.log_debug(f"\n--- Обработка листа: '{sheet_name}' ---")
+                
+                # Извлекаем серию из названия листа
+                # Предполагаем, что название листа содержит серию локомотива
+                series_name = sheet_name.strip()
+                
+                # Если в названии листа есть пробелы или дополнительный текст,
+                # пытаемся извлечь серию (например, "ВЛ80С" из "Лист ВЛ80С")
+                series_match = re.search(r'[А-ЯA-Z]+[\d]+[А-ЯA-Z]*', series_name)
+                if series_match:
+                    series_name = series_match.group()
+                
+                self.log_debug(f"Извлеченная серия из листа '{sheet_name}': '{series_name}'")
+                
                 try:
-                    series_part = filter_text.split('электровоз.')[1]
-                    series_name = series_part.split(' ')[0]
-                except:
-                    series_name = 'ВЛ80С'
-            
-            # Ищем строку с заголовками (содержит "Завод. номер секции ТПС")
-            header_row = None
-            for i in range(min(10, len(df_raw))):  # Ищем в первых 10 строках
-                row = df_raw.iloc[i]
-                for j, cell in enumerate(row):
-                    if pd.notna(cell) and 'Завод. номер секции ТПС' in str(cell):
-                        header_row = i
-                        break
-                if header_row is not None:
-                    break
-            
-            if header_row is None:
-                print("Ошибка: не найдена строка с заголовками")
-                return False
-            
-            # Читаем данные начиная со строки после заголовков
-            df = pd.read_excel(fp, skiprows=header_row, header=0)
-            
-            # Поиск нужных колонок в заголовках
-            locomotive_col = None
-            work_col = None
-            percent_col = None
-            
-            for col in df.columns:
-                col_str = str(col).lower()
-                if 'завод' in col_str and 'номер' in col_str and 'тпс' in col_str:
-                    locomotive_col = col
-                elif 'процент' in col_str:
-                    percent_col = col
-            
-            # Ищем колонку работы в строке с подзаголовками
-            work_headers_row = header_row - 1
-            if work_headers_row >= 0 and work_headers_row < len(df_raw):
-                work_headers = df_raw.iloc[work_headers_row]
-                for i, header in enumerate(work_headers):
-                    if pd.notna(header):
-                        header_str = str(header).lower()
-                        if 'работа' in header_str and 'всего' in header_str:
-                            if i < len(df.columns):
-                                work_col = df.columns[i]
+                    # Читаем данные листа
+                    df_raw = pd.read_excel(fp, sheet_name=sheet_name, header=None)
+                    
+                    # Ищем строку с заголовками
+                    header_row = None
+                    for i in range(min(10, len(df_raw))):
+                        row = df_raw.iloc[i]
+                        for j, cell in enumerate(row):
+                            if pd.notna(cell) and 'Завод' in str(cell) and 'номер' in str(cell).lower():
+                                header_row = i
                                 break
-            
-            if not locomotive_col or not percent_col:
-                print(f"Ошибка: не найдены необходимые колонки")
-                return False
-            
-            vd = []
-            processed_count = 0
-            filtered_count = 0
-            
-            for idx, r in df.iterrows():
-                try:
-                    # Пропускаем строки без данных
-                    if r.isna().all():
-                        continue
-                        
-                    lns = str(r[locomotive_col]).strip()
-                    if not lns or pd.isna(lns) or lns == 'nan' or lns == '':
+                        if header_row is not None:
+                            break
+                    
+                    if header_row is None:
+                        self.log_debug(f"Не найдена строка с заголовками на листе '{sheet_name}'")
                         continue
                     
-                    # Убираем ведущие нули
-                    try:
-                        ln = int(lns.lstrip('0')) if lns.lstrip('0') else 0
-                    except ValueError:
-                        continue
-                        
-                    if ln == 0:
+                    # Читаем данные начиная со строки после заголовков
+                    df = pd.read_excel(fp, sheet_name=sheet_name, skiprows=header_row, header=0)
+                    
+                    # Поиск нужных колонок
+                    locomotive_col = None
+                    work_col = None
+                    percent_col = None
+                    
+                    for col in df.columns:
+                        col_str = str(col).lower()
+                        if 'завод' in col_str and 'номер' in col_str:
+                            locomotive_col = col
+                        elif 'процент' in col_str or '%' in str(col):
+                            percent_col = col
+                        elif 'работа' in col_str:
+                            work_col = col
+                    
+                    if not locomotive_col or not percent_col:
+                        self.log_debug(f"Не найдены необходимые колонки на листе '{sheet_name}'")
                         continue
                     
-                    # Проверяем работу, если указан порог
-                    if work_col and min_work_threshold > 0:
+                    self.log_debug(f"Найдены колонки: локомотив='{locomotive_col}', процент='{percent_col}', работа='{work_col}'")
+                    
+                    vd = []
+                    sheet_processed = 0
+                    sheet_filtered = 0
+                    
+                    for idx, r in df.iterrows():
                         try:
-                            work_value = float(r[work_col]) if pd.notna(r[work_col]) else 0
-                            if work_value < min_work_threshold:
-                                filtered_count += 1
+                            # Пропускаем пустые строки
+                            if r.isna().all():
                                 continue
-                        except (ValueError, TypeError):
-                            work_value = 0
-                    
-                    pv = r[percent_col]
-                    if pd.notna(pv):
-                        try:
-                            if isinstance(pv, str):
-                                pv = float(pv.replace('%', '').replace(',', '.'))
+                            
+                            lns = str(r[locomotive_col]).strip()
+                            if not lns or pd.isna(lns) or lns == 'nan':
+                                continue
+                            
+                            # Убираем ведущие нули и преобразуем в число
+                            try:
+                                ln = int(lns.lstrip('0')) if lns.lstrip('0') else 0
+                            except ValueError:
+                                continue
+                            
+                            if ln == 0:
+                                continue
+                            
+                            # Проверяем работу, если указан порог
+                            if work_col and min_work_threshold > 0:
+                                try:
+                                    work_value = float(r[work_col]) if pd.notna(r[work_col]) else 0
+                                    if work_value < min_work_threshold:
+                                        sheet_filtered += 1
+                                        self.log_debug(f"Локомотив {series_name} №{ln} отфильтрован: работа {work_value:.1f} < {min_work_threshold}")
+                                        continue
+                                except (ValueError, TypeError):
+                                    work_value = 0
                             else:
-                                pv = float(pv)
+                                work_value = 0
                             
-                            # Коэффициент уже в правильном виде
-                            co = pv
-                            work_val = float(r[work_col]) if work_col and pd.notna(r[work_col]) else 0
-                            
-                            vd.append({
-                                'number': ln,
-                                'coefficient': co,
-                                'deviation_percent': (co - 1) * 100,
-                                'work_total': work_val
-                            })
-                            self.coef[(series_name, ln)] = co
-                            processed_count += 1
-                                
-                        except (ValueError, TypeError):
-                            continue
+                            # Получаем значение коэффициента
+                            pv = r[percent_col]
+                            if pd.notna(pv):
+                                try:
+                                    if isinstance(pv, str):
+                                        # Убираем символ % и заменяем запятую на точку
+                                        pv = pv.replace('%', '').replace(',', '.')
+                                        co = float(pv)
+                                    else:
+                                        co = float(pv)
+                                    
+                                    # Если значение больше 10, предполагаем, что это проценты
+                                    # и нужно перевести в коэффициент (например, 105% -> 1.05)
+                                    if co > 10:
+                                        co = co / 100
+                                    
+                                    # Нормализуем серию для сохранения
+                                    normalized_series = self.normalize_series(series_name)
+                                    
+                                    vd.append({
+                                        'series': series_name,
+                                        'series_normalized': normalized_series,
+                                        'number': ln,
+                                        'coefficient': co,
+                                        'deviation_percent': (co - 1) * 100,
+                                        'work_total': work_value
+                                    })
+                                    
+                                    # Сохраняем как с оригинальной серией, так и с нормализованной
+                                    self.coef[(series_name, ln)] = co
+                                    self.coef[(normalized_series, ln)] = co
+                                    
+                                    sheet_processed += 1
+                                    
+                                    if sheet_processed <= 3:  # Показываем первые 3 для отладки
+                                        self.log_debug(f"Загружен: {series_name} №{ln} -> коэфф={co:.3f}, откл={(co-1)*100:.1f}%, работа={work_value:.0f}")
+                                    
+                                except (ValueError, TypeError) as e:
+                                    self.log_debug(f"Ошибка обработки коэффициента для {series_name} №{ln}: {e}")
+                                    continue
                         
-                except Exception:
+                        except Exception as e:
+                            self.log_debug(f"Ошибка обработки строки {idx}: {e}")
+                            continue
+                    
+                    if vd:
+                        self.data[series_name] = vd
+                        self.log_debug(f"Лист '{sheet_name}': загружено {sheet_processed} локомотивов, отфильтровано {sheet_filtered}")
+                        total_processed += sheet_processed
+                    else:
+                        self.log_debug(f"Лист '{sheet_name}': нет данных для сохранения")
+                
+                except Exception as e:
+                    self.log_debug(f"Ошибка обработки листа '{sheet_name}': {e}")
                     continue
             
-            if vd:
-                self.data[series_name] = vd
-                print(f"Загружено {processed_count} локомотивов серии {series_name}")
-                if filtered_count > 0:
-                    print(f"Отфильтровано {filtered_count} локомотивов с работой менее {min_work_threshold}")
-                return True
-            else:
-                print("Нет данных для сохранения")
-                return False
+            self.log_debug(f"\n=== ИТОГО загружено {total_processed} локомотивов из {len(self.data)} серий ===")
+            self.log_debug(f"Всего коэффициентов в словаре: {len(self.coef)}")
+            
+            # Выводим сводку по сериям
+            for series_name, locomotives in self.data.items():
+                self.log_debug(f"Серия '{series_name}': {len(locomotives)} локомотивов")
+            
+            return total_processed > 0
             
         except Exception as e:
-            print(f"Ошибка загрузки коэффициентов: {e}")
+            self.log_debug(f"КРИТИЧЕСКАЯ ОШИБКА загрузки коэффициентов: {e}")
             return False
     
     def get_coefficient(self, s: str, n: int) -> float:
         """Получение коэффициента для локомотива"""
-        # Прямой поиск по ключу
+        # Прямой поиск
         k = (s, n)
         if k in self.coef:
+            self.log_debug(f"Найден коэффициент для {s} №{n}: {self.coef[k]:.3f} (прямой поиск)")
             return self.coef[k]
         
-        # Поиск с нормализацией названия серии
-        ns = s.upper().replace('-', '').replace(' ', '').replace('.', '')
-        for (se, nu), co in self.coef.items():
-            se_norm = se.upper().replace('-', '').replace(' ', '').replace('.', '')
-            if nu == n and se_norm == ns:
-                return co
+        # Поиск с нормализацией
+        ns = self.normalize_series(s)
+        k_norm = (ns, n)
+        if k_norm in self.coef:
+            self.log_debug(f"Найден коэффициент для {s} №{n}: {self.coef[k_norm]:.3f} (через нормализацию '{ns}')")
+            return self.coef[k_norm]
         
-        # Дополнительный поиск: если серия содержится в названии или наоборот
-        for (se, nu), co in self.coef.items():
-            if nu == n:
-                # Проверяем, содержится ли одна серия в другой
-                if (ns in se.upper() or se.upper() in ns) and len(ns) > 2 and len(se) > 2:
-                    return co
+        # Поиск по всем вариантам серий
+        for (series, number), coeff in self.coef.items():
+            if number == n:
+                series_norm = self.normalize_series(series)
+                if series_norm == ns:
+                    self.log_debug(f"Найден коэффициент для {s} №{n}: {coeff:.3f} (через сопоставление '{series}' -> '{series_norm}')")
+                    return coeff
         
-        # Debug: если коэффициент не найден, выводим информацию (только для первых 3 случаев)
-        if len(self.coef) > 0 and not hasattr(self, '_debug_count'):
-            self._debug_count = 0
+        # Коэффициент не найден
+        if not hasattr(self, '_not_found_logged'):
+            self._not_found_logged = set()
         
-        if hasattr(self, '_debug_count') and self._debug_count < 3:
-            self._debug_count += 1
-            print(f"Debug: Коэффициент не найден для '{s}' №{n}")
-            available_series = list(set(se for se, nu in self.coef.keys()))
-            print(f"Debug: Доступные серии в коэффициентах: {available_series}")
+        if (s, n) not in self._not_found_logged:
+            self._not_found_logged.add((s, n))
+            self.log_debug(f"ВНИМАНИЕ: Коэффициент НЕ НАЙДЕН для {s} №{n}, используется 1.0")
+            
+            # Показываем доступные серии для отладки
+            if len(self._not_found_logged) <= 3:
+                available_series = list(set(se for se, nu in self.coef.keys() if nu == n))
+                if available_series:
+                    self.log_debug(f"  Доступные серии для локомотива №{n}: {available_series}")
         
-        # Возвращаем 1.0 (100%) если коэффициент не найден
         return 1.0
     
     def apply_coefficient_to_consumption(self, c: float, s: str, n: int) -> float:
+        """Применение коэффициента к расходу"""
         co = self.get_coefficient(s, n)
-        return c / co
+        result = c / co
+        if co != 1.0:
+            self.log_debug(f"Применен коэффициент {co:.3f} к расходу {c:.1f} для {s} №{n} -> результат {result:.1f}")
+        return result
     
     def get_all_locomotives(self) -> List[Tuple[str, int]]:
-        return list(self.coef.keys())
+        """Получение списка всех локомотивов"""
+        # Возвращаем только уникальные пары (серия, номер)
+        unique_locomotives = {}
+        for (series, number), coeff in self.coef.items():
+            # Используем оригинальные названия серий из data
+            for original_series in self.data.keys():
+                if self.normalize_series(original_series) == self.normalize_series(series):
+                    unique_locomotives[(original_series, number)] = coeff
+                    break
+            else:
+                unique_locomotives[(series, number)] = coeff
+        
+        return list(unique_locomotives.keys())
     
     def get_series_list(self) -> List[str]:
+        """Получение списка серий"""
         return list(self.data.keys())
     
     def get_locomotives_by_series(self, s: str) -> List[Dict]:
-        return self.data.get(s, [])
+        """Получение локомотивов по серии"""
+        # Ищем как по прямому совпадению, так и по нормализованному
+        if s in self.data:
+            return self.data[s]
+        
+        # Поиск по нормализованной серии
+        ns = self.normalize_series(s)
+        for series, locomotives in self.data.items():
+            if self.normalize_series(series) == ns:
+                return locomotives
+        
+        return []
     
     def get_statistics(self) -> Dict:
+        """Получение статистики по коэффициентам"""
         if not self.coef:
             return {}
-        co = list(self.coef.values())
+        
+        # Собираем уникальные коэффициенты
+        unique_coeffs = {}
+        for (series, number), coeff in self.coef.items():
+            # Используем нормализованный ключ для исключения дубликатов
+            key = (self.normalize_series(series), number)
+            unique_coeffs[key] = coeff
+        
+        co = list(unique_coeffs.values())
         dv = [(c - 1.0) * 100 for c in co]
+        
         return {
             'total_locomotives': len(co),
             'series_count': len(self.data),
@@ -215,5 +310,9 @@ class LocomotiveCoefficientsManager:
             'avg_deviation_percent': np.mean(dv),
             'locomotives_above_norm': sum(1 for c in co if c > 1.0),
             'locomotives_below_norm': sum(1 for c in co if c < 1.0),
-            'locomotives_at_norm': sum(1 for c in co if c == 1.0)
+            'locomotives_at_norm': sum(1 for c in co if abs(c - 1.0) < 0.001)
         }
+    
+    def get_debug_log(self) -> List[str]:
+        """Получение лога отладки"""
+        return self.debug_log
