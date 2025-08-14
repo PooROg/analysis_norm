@@ -2,8 +2,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Оптимизированный диалог выбора локомотивов с Python 3.12 features
-Modern UI patterns и efficient state management
+Исправленный диалог выбора локомотивов с правильной интеграцией
+Объединяет рабочую функциональность старого кода с новыми оптимизациями
 """
 
 import tkinter as tk
@@ -33,12 +33,12 @@ class SelectionManager(Protocol):
     def get_selection_count(self) -> tuple[int, int]: ...
 
 class LocomotiveSelectorDialog:
-    """Modern locomotive selector with optimized performance."""
+    """Исправленный диалог выбора локомотивов с правильной интеграцией."""
     
     def __init__(self, parent: tk.Tk, locomotive_filter, coefficient_manager=None):
         self.parent = parent
         self.filter = locomotive_filter
-        self.coeff_manager = coefficient_manager
+        self.coefficient_manager = coefficient_manager
         self.result: DialogResult | None = None
         
         # State management
@@ -80,13 +80,11 @@ class LocomotiveSelectorDialog:
         """Center dialog on parent window."""
         self.dialog.update_idletasks()
         
-        # Get parent window position and size
         parent_x = self.parent.winfo_x()
         parent_y = self.parent.winfo_y()
         parent_width = self.parent.winfo_width()
         parent_height = self.parent.winfo_height()
         
-        # Calculate center position
         dialog_width = self.dialog.winfo_width()
         dialog_height = self.dialog.winfo_height()
         
@@ -140,8 +138,9 @@ class LocomotiveSelectorDialog:
         self.exclude_low_work_check.pack(side="left")
         
         # Update display if coefficient manager already loaded
-        if self.coeff_manager and self.coeff_manager.coefficients:
-            self._update_coefficients_display()
+        if self.coefficient_manager and hasattr(self.coefficient_manager, 'coefficients'):
+            if self.coefficient_manager.coefficients:
+                self._update_coefficients_display()
     
     def _create_selection_section(self, parent: ttk.Frame) -> None:
         """Create locomotive selection section."""
@@ -193,7 +192,11 @@ class LocomotiveSelectorDialog:
     
     def _populate_locomotives(self) -> None:
         """Populate locomotive selection interface efficiently."""
-        locomotives_by_series = self.filter.locomotives_by_series
+        if hasattr(self.filter, 'get_locomotives_by_series'):
+            locomotives_by_series = self.filter.get_locomotives_by_series()
+        else:
+            # Старый формат
+            locomotives_by_series = getattr(self.filter, 'locomotives_by_series', {})
         
         for series in sorted(locomotives_by_series.keys()):
             self._create_series_tab(series, locomotives_by_series[series])
@@ -240,9 +243,9 @@ class LocomotiveSelectorDialog:
         
         # Count locomotives with coefficients
         coeff_count = 0
-        if self.coeff_manager:
+        if self.coefficient_manager:
             for num in numbers:
-                coeff = self.coeff_manager.get_coefficient(series, num)
+                coeff = self.coefficient_manager.get_coefficient(series, num)
                 if coeff != 1.0:
                     coeff_count += 1
         
@@ -324,14 +327,14 @@ class LocomotiveSelectorDialog:
     def _add_coefficient_info(self, parent: ttk.Frame, row: int, 
                              series: str, number: int) -> None:
         """Add coefficient information to locomotive row."""
-        if not self.coeff_manager:
+        if not self.coefficient_manager:
             ttk.Label(parent, text="-").grid(row=row, column=3, padx=5, pady=1, sticky="w")
             ttk.Label(parent, text="-").grid(row=row, column=4, padx=5, pady=1, sticky="w")
             return
         
         # Get coefficient
-        coeff = self.coeff_manager.get_coefficient(series, number)
-        locomotive_info = self.coeff_manager.get_locomotive_info(series, number)
+        coeff = self.coefficient_manager.get_coefficient(series, number)
+        locomotive_info = self.coefficient_manager.get_locomotive_info(series, number)
         
         # Coefficient display
         if coeff != 1.0:
@@ -390,22 +393,22 @@ class LocomotiveSelectorDialog:
             min_work = 200 if self.exclude_low_work.get() else 0
             
             path_obj = Path(file_path)
-            success = self.coeff_manager.load_coefficients(path_obj, min_work)
+            success = self.coefficient_manager.load_coefficients(path_obj, min_work)
             
             if success:
                 self._update_coefficients_display()
                 self._refresh_locomotive_display()
                 
-                stats = self.coeff_manager.loading_statistics
-                messagebox.showinfo(
-                    "Успех", 
-                    f"Коэффициенты загружены успешно!\n\n"
-                    f"Серия: {stats['series_name']}\n"
-                    f"Локомотивов: {stats['total_locomotives']}\n"
-                    f"Средний коэффициент: {stats['coefficient_mean']:.3f}"
-                )
+                stats = self.coefficient_manager.get_statistics()
+                if stats:
+                    messagebox.showinfo(
+                        "Успех", 
+                        f"Коэффициенты загружены успешно!\n\n"
+                        f"Локомотивов: {stats['total_locomotives']}\n"
+                        f"Средний коэффициент: {stats['avg_coefficient']:.3f}"
+                    )
                 
-                logger.info(f"Coefficients loaded: {stats['total_locomotives']} locomotives")
+                logger.info(f"Coefficients loaded: {stats.get('total_locomotives', 0)} locomotives")
             else:
                 messagebox.showerror("Ошибка", "Не удалось загрузить файл коэффициентов")
                 
@@ -416,7 +419,7 @@ class LocomotiveSelectorDialog:
     def _clear_coefficients(self) -> None:
         """Clear loaded coefficients."""
         if messagebox.askyesno("Подтверждение", "Очистить загруженные коэффициенты?"):
-            self.coeff_manager.clear_coefficients()
+            self.coefficient_manager.clear_coefficients()
             self._update_coefficients_display()
             self._refresh_locomotive_display()
             self.use_coefficients.set(False)
@@ -425,21 +428,34 @@ class LocomotiveSelectorDialog:
     
     def _update_coefficients_display(self) -> None:
         """Update coefficients section display."""
-        if self.coeff_manager.file_path:
-            filename = self.coeff_manager.file_path.name
+        if hasattr(self.coefficient_manager, 'file_path') and self.coefficient_manager.file_path:
+            filename = self.coefficient_manager.file_path.name
             self.coeff_file_label.config(text=filename, foreground="black")
             
-            if self.coeff_manager.coefficients:
-                stats = self.coeff_manager.loading_statistics
+            stats = self.coefficient_manager.get_statistics()
+            if stats:
                 stats_text = (
-                    f"📊 Серия: {stats['series_name']} | "
-                    f"Локомотивов: {stats['total_locomotives']} | "
-                    f"Ср. коэфф.: {stats['coefficient_mean']:.3f} | "
-                    f"Откл.: ±{stats['coefficient_std']:.3f}"
+                    f"📊 Локомотивов: {stats['total_locomotives']} | "
+                    f"Серий: {stats['series_count']} | "
+                    f"Ср. коэфф.: {stats['avg_coefficient']:.3f} | "
+                    f"Диапазон: {stats['min_coefficient']:.2f}-{stats['max_coefficient']:.2f}"
                 )
                 self.coeff_stats_label.config(text=stats_text)
             else:
                 self.coeff_stats_label.config(text="")
+        elif hasattr(self.coefficient_manager, 'file') and self.coefficient_manager.file:
+            # Старый формат
+            filename = Path(self.coefficient_manager.file).name
+            self.coeff_file_label.config(text=filename, foreground="black")
+            
+            stats = self.coefficient_manager.get_statistics()
+            if stats:
+                stats_text = (
+                    f"📊 Локомотивов: {stats['total_locomotives']} | "
+                    f"Серий: {stats['series_count']} | "
+                    f"Ср. коэфф.: {stats['avg_coefficient']:.3f}"
+                )
+                self.coeff_stats_label.config(text=stats_text)
         else:
             self.coeff_file_label.config(text="Не загружен", foreground="gray")
             self.coeff_stats_label.config(text="")
@@ -470,12 +486,22 @@ class LocomotiveSelectorDialog:
     
     def _on_use_coefficients_changed(self) -> None:
         """Handle use coefficients checkbox change."""
-        if self.use_coefficients.get() and not self.coeff_manager.coefficients:
-            messagebox.showwarning(
-                "Предупреждение", 
-                "Сначала загрузите файл с коэффициентами"
-            )
-            self.use_coefficients.set(False)
+        if self.use_coefficients.get():
+            # Check if coefficients are loaded
+            has_coefficients = False
+            if hasattr(self.coefficient_manager, 'coefficients'):
+                has_coefficients = bool(self.coefficient_manager.coefficients)
+            elif hasattr(self.coefficient_manager, 'coef'):
+                has_coefficients = bool(self.coefficient_manager.coef)
+            elif hasattr(self.coefficient_manager, 'data'):
+                has_coefficients = bool(self.coefficient_manager.data)
+            
+            if not has_coefficients:
+                messagebox.showwarning(
+                    "Предупреждение", 
+                    "Сначала загрузите файл с коэффициентами"
+                )
+                self.use_coefficients.set(False)
     
     # Selection management
     def _toggle_series(self, series: str) -> None:
@@ -543,9 +569,15 @@ class LocomotiveSelectorDialog:
     
     def _load_current_selection(self) -> None:
         """Load current filter selection state."""
-        for locomotive_id, var in self.selection_vars.items():
-            is_selected = locomotive_id in self.filter.selected
-            var.set(is_selected)
+        if hasattr(self.filter, 'selected'):
+            for locomotive_id, var in self.selection_vars.items():
+                is_selected = locomotive_id in self.filter.selected
+                var.set(is_selected)
+        elif hasattr(self.filter, 'sel'):
+            # Старый формат
+            for locomotive_id, var in self.selection_vars.items():
+                is_selected = locomotive_id in self.filter.sel
+                var.set(is_selected)
         
         self._update_series_checkboxes()
         self._update_selection_counter()
@@ -561,15 +593,19 @@ class LocomotiveSelectorDialog:
             ]
             
             # Update filter
-            self.filter.set_selected_locomotives(selected_locomotives)
+            if hasattr(self.filter, 'set_selected_locomotives'):
+                self.filter.set_selected_locomotives(selected_locomotives)
+            elif hasattr(self.filter, 'sel'):
+                # Старый формат
+                self.filter.sel = set(selected_locomotives)
             
-            # Create result
-            self.result = DialogResult(
-                use_coefficients=self.use_coefficients.get(),
-                exclude_low_work=self.exclude_low_work.get(),
-                coefficient_manager=self.coeff_manager,
-                selected_locomotives=selected_locomotives
-            )
+            # Create result - используем старый формат для совместимости
+            self.result = {
+                'use_coefficients': self.use_coefficients.get(),
+                'exclude_low_work': self.exclude_low_work.get(),
+                'coefficients_manager': self.coefficient_manager,
+                'selected_locomotives': selected_locomotives
+            }
             
             logger.info(f"Applied selection: {len(selected_locomotives)} locomotives, "
                        f"coefficients: {self.use_coefficients.get()}")

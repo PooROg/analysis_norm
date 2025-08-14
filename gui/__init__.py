@@ -1,7 +1,7 @@
 # gui/__init__.py
 """
 GUI module for locomotive energy analysis application
-Modern tkinter interface with responsive threading
+Modern tkinter interface with responsive threading and Python 3.12 optimizations
 """
 
 from .interface import NormsAnalyzerGUI, ApplicationState

@@ -2,8 +2,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Оптимизированный анализатор норм с Python 3.12 features
-Vectorized operations и modern plotting
+Исправленный анализатор норм с правильной интеграцией
+Объединяет рабочие методы старого кода с новыми оптимизациями Python 3.12
 """
 
 import pandas as pd
@@ -282,21 +282,35 @@ class NormsManager:
         return list(self.section_norms.keys())
 
 class InteractiveNormsAnalyzer:
-    """Main analyzer class with vectorized operations and modern features."""
+    """Исправленный главный анализатор с полной совместимостью со старым API"""
     
-    def __init__(self):
+    def __init__(self, routes_file: str = 'Processed_Routes.xlsx', 
+                 norms_file: str = 'Нормы участков.xlsx'):
+        # Совместимость со старым API
+        self.rf = routes_file
+        self.nf = norms_file
+        
+        # Новые атрибуты
         self.routes_df: pd.DataFrame | None = None
+        self.rdf = None  # Алиас для совместимости
+        
         self.norms_manager = NormsManager()
         self.analysis_strategy = VectorizedAnalysisStrategy()
         self.analysis_results: dict[str, Any] = {}
+        
+        # Старые атрибуты для совместимости
+        self.nd = {}  # Будет содержать нормы в старом формате
+        self.ar = {}  # Результаты анализа
     
-    def load_data(self, routes_file: Path) -> bool:
+    def load_data(self, routes_file: Path | str = None) -> bool:
         """Load route data with optimized processing."""
         try:
-            logger.info(f"Loading routes from {routes_file}")
+            file_path = routes_file or self.rf
+            logger.info(f"Loading routes from {file_path}")
             
             # Optimized Excel reading
-            self.routes_df = pd.read_excel(routes_file, engine='openpyxl')
+            self.routes_df = pd.read_excel(file_path, engine='openpyxl')
+            self.rdf = self.routes_df  # Алиас для совместимости
             
             # Filter single-section routes using vectorized operations
             logger.info("Filtering single-section routes...")
@@ -307,6 +321,7 @@ class InteractiveNormsAnalyzer:
                             .set_index(['Номер маршрута', 'Дата маршрута'])
                             .loc[single_routes]
                             .reset_index())
+            self.rdf = self.routes_df  # Обновляем алиас
             
             # Add calculated fields
             if 'Нажатие на ось' not in self.routes_df.columns:
@@ -318,6 +333,7 @@ class InteractiveNormsAnalyzer:
             initial_count = len(self.routes_df)
             self.routes_df = self.routes_df[self.routes_df['Номер нормы'].notna()]
             self.routes_df['Номер нормы'] = self.routes_df['Номер нормы'].astype(int)
+            self.rdf = self.routes_df  # Обновляем алиас
             
             final_count = len(self.routes_df)
             unique_sections = self.routes_df['Наименование участка'].nunique()
@@ -331,9 +347,28 @@ class InteractiveNormsAnalyzer:
             logger.error(f"Failed to load routes: {e}")
             return False
     
-    def load_norms(self, norms_file: Path) -> bool:
+    def load_norms(self, norms_file: Path | str = None) -> bool:
         """Load norms data."""
-        return self.norms_manager.load_norms(norms_file)
+        try:
+            file_path = Path(norms_file or self.nf)
+            success = self.norms_manager.load_norms(file_path)
+            
+            if success:
+                # Создаем старый формат для совместимости
+                self.nd = {}
+                for section_name, norms_dict in self.norms_manager.section_norms.items():
+                    section_norms = {}
+                    for norm_id, norm_def in norms_dict.items():
+                        section_norms[norm_id] = {
+                            'points': norm_def.points,
+                            'description': norm_def.description
+                        }
+                    self.nd[section_name] = section_norms
+            
+            return success
+        except Exception as e:
+            logger.error(f"Failed to load norms: {e}")
+            return False
     
     def get_sections_list(self) -> list[str]:
         """Get list of available sections."""
@@ -387,6 +422,123 @@ class InteractiveNormsAnalyzer:
         
         logger.info(f"Analyzed {len(analyzed_data)} routes for section {section_name}")
         return analyzed_data, stats
+    
+    def analyze_section_with_filters(self, section_name: str, section_data: pd.DataFrame, 
+                                   norms: dict, locomotive_filter=None, 
+                                   coefficient_manager=None, use_coefficients: bool = False):
+        """Совместимость со старым API - анализ с фильтрами"""
+        try:
+            logger.debug(f"analyze_section_with_filters called. use_coefficients={use_coefficients}")
+            
+            # Apply locomotive filter if provided
+            if locomotive_filter:
+                section_data = locomotive_filter.filter_routes(section_data)
+                if section_data.empty:
+                    return None, None
+            
+            section_data = section_data.copy()
+            
+            # Apply coefficients if requested
+            if use_coefficients and coefficient_manager:
+                logger.debug(f"Applying coefficients. Available coefficients: {len(getattr(coefficient_manager, 'coef', {}))}")
+                section_data['Коэффициент'] = 1.0
+                section_data['Фактический удельный исходный'] = section_data['Фактический удельный']
+                applied_count = 0
+                
+                for i, row in section_data.iterrows():
+                    if 'Серия локомотива' in section_data.columns and 'Номер локомотива' in section_data.columns:
+                        series = str(row.get('Серия локомотива', ''))
+                        number = row.get('Номер локомотива', 0)
+                        
+                        if series and pd.notna(number):
+                            try:
+                                if isinstance(number, str):
+                                    number = int(number.lstrip('0')) if number.strip().lstrip('0') else 0
+                                else:
+                                    number = int(number)
+                                
+                                coeff = coefficient_manager.get_coefficient(series, number)
+                                section_data.at[i, 'Коэффициент'] = coeff
+                                
+                                if coeff != 1.0:
+                                    section_data.at[i, 'Фактический удельный'] = (
+                                        section_data.at[i, 'Фактический удельный'] / coeff
+                                    )
+                                    applied_count += 1
+                                    
+                                    if applied_count <= 3:  # Debug first 3
+                                        logger.debug(f"Applied coefficient {coeff:.3f} to {series} №{number}")
+                                        
+                            except (ValueError, TypeError) as e:
+                                logger.debug(f"Error processing locomotive: {e}")
+                                continue
+                
+                logger.debug(f"Applied coefficients to {applied_count} routes")
+            else:
+                logger.debug("Coefficients NOT applied")
+            
+            # Convert old format norms to new format
+            converted_norms = {}
+            for norm_id, norm_data in norms.items():
+                if isinstance(norm_data, dict) and 'points' in norm_data:
+                    try:
+                        norm_def = NormDefinition(
+                            norm_id=norm_id,
+                            points=norm_data['points'],
+                            description=norm_data.get('description', '')
+                        )
+                        converted_norms[norm_id] = norm_def
+                    except ValueError as e:
+                        logger.warning(f"Skipping invalid norm {norm_id}: {e}")
+                        continue
+            
+            if not converted_norms:
+                logger.error("No valid norms found")
+                return None, None
+            
+            # Perform analysis
+            analyzed_data = self.analysis_strategy.analyze(section_data, converted_norms)
+            
+            # Create norm functions for compatibility
+            norm_functions = {}
+            for norm_id, norm_def in converted_norms.items():
+                norm_functions[norm_id] = {
+                    'function': norm_def.interpolation_function,
+                    'points': norm_def.points,
+                    'x_range': norm_def.x_range
+                }
+            
+            logger.debug(f"Analysis completed for {len(analyzed_data)} routes")
+            return analyzed_data, norm_functions
+            
+        except Exception as e:
+            logger.error(f"Error in analyze_section_with_filters: {e}")
+            return None, None
+    
+    def analyze_single_section(self, section_name: str):
+        """Старый метод для совместимости"""
+        try:
+            if section_name not in self.nd:
+                return None, None, "Нормы для участка не найдены"
+            
+            section_routes = self.routes_df[
+                self.routes_df['Наименование участка'] == section_name
+            ].copy()
+            
+            if section_routes.empty:
+                return None, None, "Нет маршрутов для участка"
+            
+            # Convert to new format and analyze
+            analyzed_data, stats = self.analyze_section(section_name)
+            
+            # Create plot
+            fig = self.create_interactive_plot(section_name)
+            
+            return fig, stats, None
+            
+        except Exception as e:
+            logger.error(f"Error analyzing section {section_name}: {e}")
+            return None, None, str(e)
     
     def _apply_coefficients(self, df: pd.DataFrame, coefficient_manager) -> pd.DataFrame:
         """Apply locomotive coefficients using vectorized operations."""
@@ -446,17 +598,34 @@ class InteractiveNormsAnalyzer:
         return {
             'total_routes': total_routes,
             'processed_routes': processed_routes,
+            'total': total_routes,  # Совместимость
+            'processed': processed_routes,  # Совместимость
             'economy_strong': status_counts.get('Экономия сильная', 0),
             'economy_medium': status_counts.get('Экономия средняя', 0),
             'economy_weak': status_counts.get('Экономия слабая', 0),
+            'economy': (status_counts.get('Экономия сильная', 0) + 
+                       status_counts.get('Экономия средняя', 0) + 
+                       status_counts.get('Экономия слабая', 0)),
             'normal': status_counts.get('Норма', 0),
             'overrun_weak': status_counts.get('Перерасход слабый', 0),
             'overrun_medium': status_counts.get('Перерасход средний', 0),
             'overrun_strong': status_counts.get('Перерасход сильный', 0),
+            'overrun': (status_counts.get('Перерасход слабый', 0) + 
+                       status_counts.get('Перерасход средний', 0) + 
+                       status_counts.get('Перерасход сильный', 0)),
             'mean_deviation': float(deviations.mean()),
             'median_deviation': float(deviations.median()),
             'std_deviation': float(deviations.std()),
-            'processing_efficiency': (processed_routes / total_routes) * 100
+            'processing_efficiency': (processed_routes / total_routes) * 100,
+            'detailed_stats': {
+                'economy_strong': status_counts.get('Экономия сильная', 0),
+                'economy_medium': status_counts.get('Экономия средняя', 0),
+                'economy_weak': status_counts.get('Экономия слабая', 0),
+                'normal': status_counts.get('Норма', 0),
+                'overrun_weak': status_counts.get('Перерасход слабый', 0),
+                'overrun_medium': status_counts.get('Перерасход средний', 0),
+                'overrun_strong': status_counts.get('Перерасход сильный', 0)
+            }
         }
     
     def create_interactive_plot(self, section_name: str) -> go.Figure:

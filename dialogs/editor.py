@@ -2,8 +2,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Оптимизированный редактор норм с Python 3.12 features
-Modern UI patterns и enhanced validation
+Исправленный редактор норм с правильной интеграцией
+Объединяет рабочую функциональность старого кода с новыми оптимизациями
 """
 
 import tkinter as tk
@@ -56,7 +56,7 @@ class StandardNormValidator:
         return norm_data.validate()
 
 class NormEditorDialog:
-    """Modern norm editor with enhanced functionality."""
+    """Исправленный редактор норм с полной совместимостью."""
     
     MAX_NORMS = 10
     MAX_POINTS_PER_NORM = 15
@@ -336,10 +336,14 @@ class NormEditorDialog:
                 editor = self.norm_editors[norm_id]
                 
                 # Load description
+                description = ""
                 if hasattr(norm_def, 'description') and norm_def.description:
-                    editor['description'].insert(0, norm_def.description)
+                    description = norm_def.description
                 elif isinstance(norm_def, dict) and 'description' in norm_def:
-                    editor['description'].insert(0, norm_def['description'])
+                    description = norm_def['description']
+                
+                if description:
+                    editor['description'].insert(0, description)
                 
                 # Load points
                 points = []
@@ -598,15 +602,11 @@ class NormEditorDialog:
                     # Sort points by load value
                     sorted_points = sorted(norm_data.points, key=lambda x: x[0])
                     
-                    # Create norm definition compatible with existing system
-                    from analysis.analyzer import NormDefinition
-                    norm_def = NormDefinition(
-                        norm_id=norm_id,
-                        points=sorted_points,
-                        description=norm_data.description
-                    )
-                    
-                    edited_norms[norm_id] = norm_def
+                    # Create norm definition in old format for compatibility
+                    edited_norms[norm_id] = {
+                        'points': sorted_points,
+                        'description': norm_data.description
+                    }
         
         return edited_norms
     
@@ -655,12 +655,14 @@ class NormEditorDialog:
         
         for norm_id, norm_def in sorted(edited_norms.items()):
             content += f"📈 Норма №{norm_id}\n"
-            content += f"Описание: {norm_def.description or 'Не указано'}\n"
-            content += f"Количество точек: {len(norm_def.points)}\n"
-            content += f"Диапазон нагрузки: {norm_def.x_range[0]:.1f} - {norm_def.x_range[1]:.1f} т/ось\n"
+            content += f"Описание: {norm_def['description'] or 'Не указано'}\n"
+            content += f"Количество точек: {len(norm_def['points'])}\n"
+            
+            x_vals = [p[0] for p in norm_def['points']]
+            content += f"Диапазон нагрузки: {min(x_vals):.1f} - {max(x_vals):.1f} т/ось\n"
             content += "Точки:\n"
             
-            for i, (load, consumption) in enumerate(norm_def.points, 1):
+            for i, (load, consumption) in enumerate(norm_def['points'], 1):
                 content += f"  {i:2d}. {load:6.1f} т/ось → {consumption:8.1f} кВт·ч/10⁴ ткм\n"
             
             content += "\n"
@@ -748,16 +750,15 @@ class NormEditorDialog:
             elif isinstance(existing_norm, dict) and 'points' in existing_norm:
                 existing_points = existing_norm['points']
             
-            if len(current_norm.points) != len(existing_points):
+            if len(current_norm['points']) != len(existing_points):
                 return True
             
             # Compare individual points (with tolerance)
-            for (curr_load, curr_cons), (exist_load, exist_cons) in zip(current_norm.points, existing_points):
+            for (curr_load, curr_cons), (exist_load, exist_cons) in zip(current_norm['points'], existing_points):
                 if abs(curr_load - exist_load) > 0.01 or abs(curr_cons - exist_cons) > 0.01:
                     return True
         
         return False
-
 
 class NormComparator:
     """Utility class for comparing norm analysis results."""

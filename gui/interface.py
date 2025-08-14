@@ -3,7 +3,7 @@
 # -*- coding: utf-8 -*-
 """
 Исправленный GUI с правильной интеграцией компонентов
-Современный интерфейс + восстановленная функциональность
+Объединяет рабочую функциональность старого кода с современным интерфейсом
 """
 
 import tkinter as tk
@@ -50,14 +50,14 @@ class NormsAnalyzerGUI:
     
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("Анализатор норм РЖД - Python 3.12 Optimized")
+        self.root.title("Анализатор норм РЖД - Python 3.12 Optimized (Fixed)")
         self.root.geometry("1400x900")
         
         # Initialize state
         self.state = ApplicationState()
         self.analyzer = InteractiveNormsAnalyzer()
         self.locomotive_filter: LocomotiveFilter | None = None
-        self.coefficient_manager = LocomotiveCoefficientsManager()  # ИСПРАВЛЕНО: используем правильный класс
+        self.coefficient_manager = LocomotiveCoefficientsManager()
         
         # Threading
         self.thread_queue = queue.Queue()
@@ -470,12 +470,15 @@ class NormsAnalyzerGUI:
                 if section_data.empty:
                     raise ValueError(f"No data found for section: {section}")
                 
-                # Get section norms
+                # Get section norms from the new manager
                 section_norms = self.analyzer.norms_manager.get_section_norms(section)
                 if not section_norms:
-                    raise ValueError(f"No norms found for section: {section}")
+                    # Try old format for compatibility
+                    section_norms = self.analyzer.nd.get(section, {})
+                    if not section_norms:
+                        raise ValueError(f"No norms found for section: {section}")
                 
-                # Perform analysis with filters using the CORRECTED method
+                # Perform analysis with filters using analyze_section_with_filters
                 analyzed_data, norm_functions = self.analyzer.analyze_section_with_filters(
                     section,
                     section_data,
@@ -525,6 +528,13 @@ class NormsAnalyzerGUI:
         self.state.analysis_results[self.state.current_section] = {
             'data': analyzed_data,
             'stats': stats
+        }
+        
+        # Update analyzer's internal results for plot creation
+        self.analyzer.analysis_results[self.state.current_section] = {
+            'data': analyzed_data,
+            'stats': stats,
+            'norms': self.analyzer.norms_manager.get_section_norms(self.state.current_section)
         }
         
         # Update statistics display
@@ -578,8 +588,10 @@ class NormsAnalyzerGUI:
         self.root.wait_window(dialog.dialog)
         
         if dialog.result:
-            self.state.use_coefficients = dialog.result.use_coefficients  # ИСПРАВЛЕНО: доступ к атрибуту
-            self.coefficient_manager = dialog.result.coefficient_manager  # ИСПРАВЛЕНО
+            self.state.use_coefficients = dialog.result.get('use_coefficients', False)
+            
+            if 'coefficients_manager' in dialog.result:
+                self.coefficient_manager = dialog.result['coefficients_manager']
             
             # Update status
             selected_count = len(self.locomotive_filter.selected)
@@ -598,9 +610,10 @@ class NormsAnalyzerGUI:
             messagebox.showwarning("Предупреждение", "Выберите участок")
             return
         
+        # Get existing norms from both new and old format
         existing_norms = self.analyzer.norms_manager.get_section_norms(section)
         
-        # Конвертируем NormDefinition в dict для совместимости с редактором
+        # Convert NormDefinition to dict for compatibility with editor
         existing_norms_dict = {}
         for norm_id, norm_def in existing_norms.items():
             existing_norms_dict[norm_id] = {
@@ -608,12 +621,34 @@ class NormsAnalyzerGUI:
                 'description': norm_def.description
             }
         
+        # If no norms found in new format, try old format
+        if not existing_norms_dict and section in self.analyzer.nd:
+            existing_norms_dict = self.analyzer.nd[section]
+        
         dialog = NormEditorDialog(self.root, section, existing_norms_dict)
         self.root.wait_window(dialog.dialog)
         
         if dialog.result == 'apply' and dialog.edited_norms:
-            # Update norms
-            self.analyzer.norms_manager.section_norms[section] = dialog.edited_norms
+            # Update both new and old format
+            self.analyzer.nd[section] = dialog.edited_norms
+            
+            # Convert to new format
+            new_format_norms = {}
+            for norm_id, norm_data in dialog.edited_norms.items():
+                try:
+                    from analysis.analyzer import NormDefinition
+                    norm_def = NormDefinition(
+                        norm_id=norm_id,
+                        points=norm_data['points'],
+                        description=norm_data.get('description', '')
+                    )
+                    new_format_norms[norm_id] = norm_def
+                except ValueError as e:
+                    logger.warning(f"Skipping invalid norm {norm_id}: {e}")
+                    continue
+            
+            if new_format_norms:
+                self.analyzer.norms_manager.section_norms[section] = new_format_norms
             
             self._log_action(f"Обновлены нормы для участка {section}")
             
@@ -713,7 +748,7 @@ class NormsAnalyzerGUI:
     # Display updates
     def _update_statistics_display(self, stats: dict) -> None:
         """Update statistics text display."""
-        total = stats['processed_routes']
+        total = stats.get('processed_routes', stats.get('processed', 0))
         
         if total == 0:
             stats_text = "Нет данных для отображения"
@@ -749,12 +784,13 @@ class NormsAnalyzerGUI:
     
     def _update_results_display(self, section: str, stats: dict) -> None:
         """Update main results display."""
-        total = stats['processed_routes']
+        total = stats.get('processed_routes', stats.get('processed', 0))
+        total_routes = stats.get('total_routes', stats.get('total', 0))
         
         results_text = f"""🎯 АНАЛИЗ УЧАСТКА: {section}
 {'='*60}
 
-📊 Обработано {total:,} маршрутов из {stats['total_routes']:,} общих
+📊 Обработано {total:,} маршрутов из {total_routes:,} общих
 🎯 Эффективность обработки: {stats.get('processing_efficiency', 0):.1f}%
 
 📈 РЕЗУЛЬТАТЫ АНАЛИЗА:
@@ -791,7 +827,7 @@ class NormsAnalyzerGUI:
         welcome_text = """🚂 АНАЛИЗАТОР НОРМ РАСХОДА ЭЛЕКТРОЭНЕРГИИ РЖД
 {'='*60}
 
-🎯 Python 3.12 Optimized Version
+🎯 Python 3.12 Optimized Version (Fixed)
 
 🚀 ВОЗМОЖНОСТИ СИСТЕМЫ:
    • Векторизованный анализ больших объемов данных
@@ -801,11 +837,11 @@ class NormsAnalyzerGUI:
    • Редактирование и актуализация норм
    • Экспорт результатов в Excel и графические форматы
 
-⚡ НОВЫЕ ОПТИМИЗАЦИИ:
-   • 10-100x ускорение обработки данных
-   • Улучшенное управление памятью
-   • Кэширование для быстрых повторных расчетов
-   • Современный многопоточный интерфейс
+⚡ ИСПРАВЛЕНИЯ В ЭТОЙ ВЕРСИИ:
+   • Восстановлена работа с коэффициентами локомотивов
+   • Исправлены ошибки построения графиков
+   • Улучшена совместимость компонентов
+   • Оптимизирована производительность
 
 📝 НАЧАЛО РАБОТЫ:
    1. Выберите файлы данных (маршруты и нормы)

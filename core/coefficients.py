@@ -2,8 +2,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Оптимизированный менеджер коэффициентов с Python 3.12 features
-Включает fast Excel processing и LRU caching
+Исправленный менеджер коэффициентов с правильной интеграцией
+Совмещает рабочую логику старого кода с новыми оптимизациями Python 3.12
 """
 
 import pandas as pd
@@ -59,8 +59,8 @@ class LocomotiveCoefficient:
         """Locomotive identifier tuple."""
         return (self.series, self.number)
 
-class CoefficientManager:
-    """Optimized coefficient manager with modern Excel processing and caching."""
+class LocomotiveCoefficientsManager:
+    """Исправленный менеджер коэффициентов с совместимостью со старым API"""
     
     # Common locomotive series patterns for fuzzy matching
     SERIES_PATTERNS = {
@@ -72,11 +72,20 @@ class CoefficientManager:
     }
     
     def __init__(self):
+        self.file = None  # Совместимость со старым API
         self.file_path: Path | None = None
         self.coefficients: dict[LocomotiveID, LocomotiveCoefficient] = {}
+        self.coef = {}  # Старый формат для совместимости
+        self.data = {}  # Старый формат для совместимости
         self._series_name: str = ""
         self._stats_cache_valid = False
+        self.debug_log = []
         
+    def log_debug(self, message):
+        """Добавление сообщения в лог отладки"""
+        self.debug_log.append(message)
+        logger.debug(message)
+    
     @cached_property
     def loading_statistics(self) -> dict[str, Any]:
         """Cached loading statistics."""
@@ -105,13 +114,20 @@ class CoefficientManager:
             distribution[rating] = distribution.get(rating, 0) + 1
         return distribution
     
-    def load_coefficients(self, file_path: Path, min_work_threshold: float = 0) -> bool:
+    def load_coefficients(self, file_path: Path | str, min_work_threshold: float = 0) -> bool:
         """Load coefficients using optimized Excel processing."""
         try:
+            if isinstance(file_path, str):
+                file_path = Path(file_path)
+                
             logger.info(f"Loading coefficients from {file_path}")
+            self.file = str(file_path)  # Совместимость
             self.file_path = file_path
             self.coefficients.clear()
+            self.coef.clear()
+            self.data.clear()
             self._stats_cache_valid = False
+            self.debug_log.clear()
             
             # Fast Excel reading with optimized settings
             df = self._read_excel_optimized(file_path)
@@ -253,6 +269,7 @@ class CoefficientManager:
             valid_df = valid_df[work_mask]
         
         processed_count = 0
+        series_data = []
         
         # Process each row
         for _, row in valid_df.iterrows():
@@ -287,11 +304,29 @@ class CoefficientManager:
                 )
                 
                 self.coefficients[locomotive_id] = coeff_obj
+                
+                # Старый формат для совместимости
+                self.coef[locomotive_id] = coefficient
+                
+                # Добавляем в data для совместимости
+                series_data.append({
+                    'series': self._series_name,
+                    'series_normalized': self._normalize_series_name(self._series_name),
+                    'number': number,
+                    'coefficient': coefficient,
+                    'deviation_percent': (coefficient - 1) * 100,
+                    'work_total': work_hours
+                })
+                
                 processed_count += 1
                 
             except (ValueError, TypeError) as e:
                 logger.debug(f"Skipping invalid row: {e}")
                 continue
+        
+        # Сохраняем данные для совместимости
+        if series_data:
+            self.data[self._series_name] = series_data
         
         return processed_count
     
@@ -310,10 +345,13 @@ class CoefficientManager:
             
             # Handle scientific notation
             if 'e' in str_value.lower():
-                return float(str_value)
+                result = float(str_value)
+            else:
+                result = float(str_value)
             
-            # Parse as float
-            result = float(str_value)
+            # If value is > 10, assume it's percentage and convert
+            if result > 10:
+                result = result / 100
             
             # Validate range
             if 0.1 <= result <= 3.0:
@@ -326,14 +364,23 @@ class CoefficientManager:
             logger.debug(f"Cannot parse coefficient: {value}")
             return None
     
+    def _normalize_series_name(self, series: str) -> str:
+        """Normalize series name for fuzzy matching."""
+        normalized = series.upper().replace('-', '').replace(' ', '').replace('.', '')
+        return normalized
+    
     @lru_cache(maxsize=1024)
     def get_coefficient(self, series: str, number: int) -> float:
-        """Get coefficient with LRU caching for 50,000x performance improvement."""
+        """Get coefficient with LRU caching for performance."""
         locomotive_id = (series, number)
         
         # Direct lookup first
         if locomotive_id in self.coefficients:
             return self.coefficients[locomotive_id].coefficient
+        
+        # Also check old format
+        if locomotive_id in self.coef:
+            return self.coef[locomotive_id]
         
         # Fuzzy matching for series variations
         normalized_series = self._normalize_series_name(series)
@@ -343,22 +390,14 @@ class CoefficientManager:
                 self._normalize_series_name(stored_series) == normalized_series):
                 return coeff_obj.coefficient
         
+        # Check old format too
+        for (stored_series, stored_number), coeff in self.coef.items():
+            if (stored_number == number and 
+                self._normalize_series_name(stored_series) == normalized_series):
+                return coeff
+        
         # No match found
         return 1.0
-    
-    @lru_cache(maxsize=256)
-    def _normalize_series_name(self, series: str) -> str:
-        """Normalize series name for fuzzy matching."""
-        normalized = series.upper().replace('-', '').replace(' ', '').replace('.', '')
-        
-        # Check against known patterns
-        for standard_series, patterns in self.SERIES_PATTERNS.items():
-            for pattern in patterns:
-                pattern_norm = pattern.upper().replace('-', '').replace(' ', '')
-                if pattern_norm == normalized:
-                    return standard_series.replace('-', '').replace(' ', '')
-        
-        return normalized
     
     def apply_coefficient_to_consumption(self, consumption: float, 
                                        series: str, number: int) -> float:
@@ -373,46 +412,97 @@ class CoefficientManager:
     
     def get_all_locomotives(self) -> list[LocomotiveID]:
         """Get all locomotive IDs."""
-        return list(self.coefficients.keys())
+        # Объединяем из обеих структур данных
+        all_locomotives = set(self.coefficients.keys())
+        all_locomotives.update(self.coef.keys())
+        return list(all_locomotives)
     
     def get_series_list(self) -> list[str]:
         """Get list of available series."""
-        return list(set(series for series, _ in self.coefficients.keys()))
+        series_set = set()
+        for series, _ in self.coefficients.keys():
+            series_set.add(series)
+        for series, _ in self.coef.keys():
+            series_set.add(series)
+        # Также добавляем из data
+        series_set.update(self.data.keys())
+        return list(series_set)
     
-    def get_locomotives_by_series(self, series: str) -> list[LocomotiveCoefficient]:
+    def get_locomotives_by_series(self, series: str) -> list[dict]:
         """Get all locomotives for a specific series."""
-        return [
-            coeff for (ser, _), coeff in self.coefficients.items()
-            if ser == series
-        ]
+        # Сначала проверяем новый формат
+        if series in self.data:
+            return self.data[series]
+        
+        # Создаем из coefficients
+        locomotives = []
+        normalized_series = self._normalize_series_name(series)
+        
+        for (ser, num), coeff_obj in self.coefficients.items():
+            if self._normalize_series_name(ser) == normalized_series:
+                locomotives.append({
+                    'series': ser,
+                    'number': num,
+                    'coefficient': coeff_obj.coefficient,
+                    'work_total': coeff_obj.work_hours,
+                    'deviation_percent': coeff_obj.deviation_percent
+                })
+        
+        return locomotives
     
-    def export_coefficients(self) -> list[dict[str, Any]]:
-        """Export coefficients for external use."""
-        return [
-            {
-                'series': coeff.series,
-                'number': coeff.number,
-                'coefficient': coeff.coefficient,
-                'work_hours': coeff.work_hours,
-                'efficiency_rating': coeff.efficiency_rating,
-                'deviation_percent': coeff.deviation_percent
-            }
-            for coeff in sorted(self.coefficients.values(), 
-                              key=lambda x: (x.series, x.number))
-        ]
+    def get_statistics(self) -> dict:
+        """Get statistics about loaded coefficients."""
+        if not self.coefficients and not self.coef:
+            return {}
+        
+        # Get unique coefficients
+        all_coeffs = {}
+        for (series, number), coeff_obj in self.coefficients.items():
+            all_coeffs[(series, number)] = coeff_obj.coefficient
+        
+        for (series, number), coeff in self.coef.items():
+            if (series, number) not in all_coeffs:
+                all_coeffs[(series, number)] = coeff
+        
+        if not all_coeffs:
+            return {}
+        
+        coeffs = list(all_coeffs.values())
+        deviations = [(c - 1.0) * 100 for c in coeffs]
+        
+        return {
+            'total_locomotives': len(coeffs),
+            'series_count': len(set(series for series, _ in all_coeffs.keys())),
+            'avg_coefficient': np.mean(coeffs),
+            'min_coefficient': min(coeffs),
+            'max_coefficient': max(coeffs),
+            'avg_deviation_percent': np.mean(deviations),
+            'locomotives_above_norm': sum(1 for c in coeffs if c > 1.0),
+            'locomotives_below_norm': sum(1 for c in coeffs if c < 1.0),
+            'locomotives_at_norm': sum(1 for c in coeffs if abs(c - 1.0) < 0.001)
+        }
     
     def clear_coefficients(self) -> None:
         """Clear all loaded coefficients."""
         self.coefficients.clear()
+        self.coef.clear()
+        self.data.clear()
         self.file_path = None
+        self.file = None
         self._series_name = ""
         self._stats_cache_valid = False
         
         # Clear caches
         self.get_coefficient.cache_clear()
-        self._normalize_series_name.cache_clear()
         
         if hasattr(self, 'loading_statistics'):
             delattr(self, 'loading_statistics')
         
         logger.info("Cleared all coefficients")
+    
+    def get_debug_log(self) -> list[str]:
+        """Get debug log for troubleshooting."""
+        return self.debug_log
+
+# Создаем алиас для совместимости
+CoefficientManager = LocomotiveCoefficientsManager

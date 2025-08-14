@@ -2,8 +2,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Оптимизированный фильтр локомотивов с Python 3.12 features
-Использует vectorized operations и modern type system
+Исправленный фильтр локомотивов с правильной интеграцией
+Объединяет рабочую функциональность старого кода с новыми оптимизациями Python 3.12
 """
 
 import pandas as pd
@@ -38,12 +38,21 @@ class DataFrameProcessor(Protocol):
     def process(self, df: pd.DataFrame) -> pd.DataFrame: ...
 
 class LocomotiveFilter:
-    """Optimized locomotive filter with vectorized operations and caching."""
+    """Исправленный фильтр локомотивов с полной совместимостью со старым API."""
     
     def __init__(self, routes_df: pd.DataFrame):
         self.routes_df = routes_df
+        self.df = routes_df  # Алиас для совместимости
         self._validate_dataframe()
+        
+        # Новые атрибуты
+        self.available_locomotives = self._extract_locomotives()
         self.selected: set[LocomotiveID] = set(self.available_locomotives)
+        
+        # Старые атрибуты для совместимости
+        self.avl = list(self.available_locomotives)
+        self.sel = set(self.available_locomotives)
+        
         logger.info(f"Initialized filter with {len(self.available_locomotives)} locomotives")
     
     def _validate_dataframe(self) -> None:
@@ -54,7 +63,21 @@ class LocomotiveFilter:
             raise ValueError(f"Missing required columns: {missing}")
     
     @cached_property
-    def available_locomotives(self) -> frozenset[LocomotiveID]:
+    def locomotives_by_series(self) -> dict[str, list[int]]:
+        """Group locomotives by series with caching."""
+        series_dict = {}
+        for series, number in self.available_locomotives:
+            if series not in series_dict:
+                series_dict[series] = []
+            series_dict[series].append(number)
+        
+        # Sort numbers within each series
+        for series in series_dict:
+            series_dict[series].sort()
+        
+        return series_dict
+    
+    def _extract_locomotives(self) -> frozenset[LocomotiveID]:
         """Extract and cache unique locomotives using vectorized operations."""
         try:
             # Vectorized filtering for valid data
@@ -92,20 +115,9 @@ class LocomotiveFilter:
             logger.error(f"Failed to extract locomotives: {e}")
             return frozenset()
     
-    @cached_property
-    def locomotives_by_series(self) -> dict[str, list[int]]:
-        """Group locomotives by series with caching."""
-        series_dict = {}
-        for series, number in self.available_locomotives:
-            if series not in series_dict:
-                series_dict[series] = []
-            series_dict[series].append(number)
-        
-        # Sort numbers within each series
-        for series in series_dict:
-            series_dict[series].sort()
-        
-        return series_dict
+    def get_locomotives_by_series(self) -> dict[str, list[int]]:
+        """Get locomotives grouped by series - старый метод для совместимости."""
+        return self.locomotives_by_series
     
     def set_selected_locomotives(self, selected: list[LocomotiveID] | set[LocomotiveID]) -> None:
         """Set selected locomotives with validation."""
@@ -119,6 +131,7 @@ class LocomotiveFilter:
             selected -= invalid
         
         self.selected = selected
+        self.sel = selected  # Обновляем старый формат
         logger.info(f"Selected {len(selected)} locomotives")
     
     def toggle_locomotive(self, series: str, number: int) -> bool:
@@ -130,9 +143,11 @@ class LocomotiveFilter:
         
         if locomotive_id in self.selected:
             self.selected.remove(locomotive_id)
+            self.sel.discard(locomotive_id)
             return False
         else:
             self.selected.add(locomotive_id)
+            self.sel.add(locomotive_id)
             return True
     
     def select_all_in_series(self, series: str) -> int:
@@ -141,6 +156,7 @@ class LocomotiveFilter:
         for ser, num in self.available_locomotives:
             if ser == series:
                 self.selected.add((ser, num))
+                self.sel.add((ser, num))
                 count += 1
         
         logger.info(f"Selected {count} locomotives in series {series}")
@@ -156,24 +172,30 @@ class LocomotiveFilter:
                 count += 1
         
         self.selected -= to_remove
+        self.sel -= to_remove
         logger.info(f"Deselected {count} locomotives in series {series}")
         return count
     
     def select_all(self) -> None:
         """Select all available locomotives."""
         self.selected = set(self.available_locomotives)
+        self.sel = set(self.available_locomotives)
         logger.info("Selected all locomotives")
     
     def deselect_all(self) -> None:
         """Deselect all locomotives."""
         self.selected.clear()
+        self.sel.clear()
         logger.info("Deselected all locomotives")
     
     def filter_routes(self, df: pd.DataFrame) -> pd.DataFrame:
         """Filter routes using vectorized operations for performance."""
-        if not self.selected:
+        if not self.selected and not self.sel:
             logger.warning("No locomotives selected - returning empty DataFrame")
             return df.iloc[0:0].copy()
+        
+        # Используем актуальное множество выбранных локомотивов
+        selected_set = self.selected if self.selected else self.sel
         
         try:
             # Create vectorized boolean mask
@@ -181,7 +203,7 @@ class LocomotiveFilter:
             
             # Group selected locomotives by series for efficient processing
             selected_by_series = {}
-            for series, number in self.selected:
+            for series, number in selected_set:
                 if series not in selected_by_series:
                     selected_by_series[series] = set()
                 selected_by_series[series].add(number)
@@ -227,22 +249,23 @@ class LocomotiveFilter:
     def get_selection_statistics(self) -> LocomotiveStats:
         """Get overall selection statistics."""
         total_available = len(self.available_locomotives)
-        total_selected = len(self.selected)
+        total_selected = len(self.selected) if self.selected else len(self.sel)
         
         return {
             'total_available': total_available,
             'total_selected': total_selected,
             'selection_percentage': (total_selected / total_available * 100) if total_available else 0,
             'series_count': len(set(series for series, _ in self.available_locomotives)),
-            'selected_series_count': len(set(series for series, _ in self.selected)),
+            'selected_series_count': len(set(series for series, _ in (self.selected or self.sel))),
             'unselected_count': total_available - total_selected
         }
     
     def export_selection(self) -> list[dict[str, str | int]]:
         """Export current selection for external use."""
+        selected_set = self.selected if self.selected else self.sel
         return [
             {'series': series, 'number': number}
-            for series, number in sorted(self.selected)
+            for series, number in sorted(selected_set)
         ]
     
     def import_selection(self, selection_data: list[dict[str, str | int]]) -> bool:
@@ -255,6 +278,7 @@ class LocomotiveFilter:
                     new_selection.add(locomotive_id)
             
             self.selected = new_selection
+            self.sel = new_selection
             logger.info(f"Imported selection of {len(new_selection)} locomotives")
             return True
             
