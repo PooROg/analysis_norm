@@ -10,69 +10,39 @@ import warnings
 warnings.filterwarnings('ignore')
 from core.filter import LocomotiveFilter
 from core.coefficients import LocomotiveCoefficientsManager
-from analysis.html_parser import HTMLRouteParser
-import logging
-
-logger = logging.getLogger(__name__)
 
 class InteractiveNormsAnalyzer:
     """Класс для интерактивного анализа норм расхода электроэнергии"""
     
-    def __init__(self, route_files=None, nf='Нормы участков.xlsx'):
-        self.route_files = route_files or []
+    def __init__(self, rf='Processed_Routes.xlsx', nf='Нормы участков.xlsx'):
+        self.rf = rf
         self.nf = nf
         self.rdf = None
         self.nd = {}
         self.ar = {}
-        self.html_parser = HTMLRouteParser()
         
     def load_data(self):
-        """Загрузка данных из HTML файлов"""
         try:
-            print("\n[1] Загрузка данных маршрутов из HTML файлов...")
-            logger.info(f"Начало загрузки данных из {len(self.route_files)} файлов")
-            
-            if not self.route_files:
-                print("❌ Не выбраны файлы маршрутов")
-                return False
-            
-            # Парсинг HTML файлов
-            self.rdf = self.html_parser.parse_html_files(self.route_files)
-            
-            if self.rdf.empty:
-                print("❌ Не удалось извлечь данные из HTML файлов")
-                return False
-                
+            print("\n[1] Загрузка данных маршрутов...")
+            self.rdf = pd.read_excel(self.rf)
             print("    Фильтрация маршрутов с одним участком...")
-            logger.info(f"Загружено {len(self.rdf)} записей маршрутов")
-            
-            # Фильтрация маршрутов с одним участком
             rc = self.rdf.groupby(['Номер маршрута', 'Дата маршрута']).size()
             sr = rc[rc == 1].index
             self.rdf = self.rdf.set_index(['Номер маршрута', 'Дата маршрута']).loc[sr].reset_index()
-            
-            # Добавляем расчетные поля если их нет
             if 'Нажатие на ось' not in self.rdf.columns:
-                self.rdf['Нажатие на ось'] = self.rdf['БРУТТО'] / 1  # Примерное значение
-                
-            # Исключаем записи без номера нормы
+                self.rdf['Нажатие на ось'] = self.rdf['БРУТТО'] / self.rdf['ОСИ']
             ic = len(self.rdf)
             self.rdf = self.rdf[self.rdf['Номер нормы'].notna()]
-            
+            self.rdf['Номер нормы'] = self.rdf['Номер нормы'].astype(int)
             print(f"    Загружено маршрутов: {ic}")
             print(f"    С указанной нормой: {len(self.rdf)}")
             print(f"    Уникальных участков: {self.rdf['Наименование участка'].nunique()}")
-            
-            logger.info(f"Успешно загружено {len(self.rdf)} записей с нормами")
             return True
-            
         except Exception as e:
             print(f"❌ Ошибка загрузки данных: {e}")
-            logger.error(f"Ошибка загрузки данных: {e}")
             return False
     
     def load_norms(self):
-        """Загрузка норм из Excel файла"""
         try:
             print("\n[2] Загрузка норм...")
             ef = pd.ExcelFile(self.nf)
@@ -88,16 +58,12 @@ class InteractiveNormsAnalyzer:
             if not self.nd:
                 print("❌ Не найдено ни одной нормы в файле")
                 return False
-                
-            logger.info(f"Загружено норм из {len(self.nd)} листов")
             return True
         except Exception as e:
             print(f"❌ Ошибка загрузки норм: {e}")
-            logger.error(f"Ошибка загрузки норм: {e}")
             return False
     
     def parse_norms_from_sheet(self, df, sn):
-        """Парсинг норм из листа Excel (без изменений)"""
         norms = {}
         for ri in range(len(df)):
             fc = str(df.iloc[ri, 0]) if pd.notna(df.iloc[ri, 0]) else ""
@@ -125,118 +91,67 @@ class InteractiveNormsAnalyzer:
                     continue
         return norms
     
-    def get_norm_by_id(self, norm_id: int):
-        """Поиск нормы по ID из HTML"""
-        logger.debug(f"Поиск нормы с ID: {norm_id}")
-        
-        # Ищем норму во всех листах
-        for sheet_name, norms in self.nd.items():
-            for norm_number, norm_data in norms.items():
-                # Простое сопоставление - можно улучшить логику
-                if norm_number == norm_id or str(norm_id).endswith(str(norm_number)):
-                    logger.debug(f"Найдена норма {norm_number} в листе {sheet_name} для ID {norm_id}")
-                    return norm_data
-                    
-        logger.warning(f"Норма с ID {norm_id} не найдена")
-        return None
-    
     def analyze_section(self, sn, rdf, norms):
-        """Анализ участка с использованием номеров норм из HTML"""
-        logger.info(f"Анализ участка {sn}")
-        
         nf = {}
-        
-        # Получаем уникальные номера норм для данного участка
-        section_routes = rdf[rdf['Наименование участка'] == sn]
-        unique_norm_ids = section_routes['Номер нормы'].dropna().unique()
-        
-        logger.debug(f"Найдены номера норм для участка {sn}: {unique_norm_ids}")
-        
-        # Создаем функции интерполяции для каждой нормы
-        for norm_id in unique_norm_ids:
-            norm_data = self.get_norm_by_id(int(norm_id))
-            if norm_data:
-                pts = norm_data['points']
-                xv = [p[0] for p in pts]
-                yv = [p[1] for p in pts]
-                
-                if len(pts) == 2:
-                    inf = interp1d(xv, yv, kind='linear', fill_value='extrapolate', bounds_error=False)
-                else:
-                    try:
-                        inf = CubicSpline(xv, yv, bc_type='natural')
-                    except:
-                        inf = interp1d(xv, yv, kind='quadratic' if len(pts) > 2 else 'linear', 
-                                     fill_value='extrapolate', bounds_error=False)
-                
-                nf[norm_id] = {
-                    'function': inf,
-                    'points': pts,
-                    'x_range': (min(xv), max(xv))
-                }
-                logger.debug(f"Создана функция интерполяции для нормы {norm_id}")
-        
-        # Инициализируем новые колонки
-        rdf = rdf.copy()
+        for ni, nd in norms.items():
+            pts = nd['points']
+            xv = [p[0] for p in pts]
+            yv = [p[1] for p in pts]
+            if len(pts) == 2:
+                inf = interp1d(xv, yv, kind='linear', fill_value='extrapolate', bounds_error=False)
+            else:
+                try:
+                    inf = CubicSpline(xv, yv, bc_type='natural')
+                except:
+                    inf = interp1d(xv, yv, kind='quadratic' if len(pts) > 2 else 'linear', fill_value='extrapolate', bounds_error=False)
+            nf[ni] = {
+                'function': inf,
+                'points': pts,
+                'x_range': (min(xv), max(xv))
+            }
         rdf['Норма интерполированная'] = 0.0
         rdf['Отклонение, %'] = 0.0
         rdf['Статус'] = 'Не определен'
-        
-        # Применяем нормы к маршрутам
         for i, r in rdf.iterrows():
-            norm_id = r.get('Номер нормы')
-            if pd.notna(norm_id) and norm_id in nf:
+            ni = r['Номер нормы']
+            if ni in nf:
                 try:
                     xv = r['Нажатие на ось']
-                    nfunc = nf[norm_id]['function']
+                    nfunc = nf[ni]['function']
                     nval = float(nfunc(xv))
                     rdf.loc[i, 'Норма интерполированная'] = nval
-                    
                     fval = r['Фактический удельный']
                     if nval > 0:
                         dev = ((fval - nval) / nval) * 100
                         rdf.loc[i, 'Отклонение, %'] = dev
-                        
                         if dev < -5:
                             rdf.loc[i, 'Статус'] = 'Экономия'
                         elif dev > 5:
                             rdf.loc[i, 'Статус'] = 'Перерасход'
                         else:
                             rdf.loc[i, 'Статус'] = 'Норма'
-                            
-                    logger.debug(f"Маршрут {r.get('Номер маршрута')}: норма={nval:.2f}, факт={fval:.2f}, откл={dev:.1f}%")
-                except Exception as e:
-                    logger.error(f"Ошибка применения нормы {norm_id}: {e}")
+                except:
                     continue
-        
         self.ar[sn] = {
             'routes': rdf,
-            'norms': {norm_id: {'points': nf[norm_id]['points']} for norm_id in nf},
+            'norms': norms,
             'norm_functions': nf
         }
-        
         return rdf, nf
     
     def analyze_section_with_filters(self, sn, rdf, norms, lf=None, cm=None, uc=False):
-        """Анализ участка с применением фильтров"""
-        logger.info(f"Анализ участка {sn} с фильтрами. uc={uc}, коэффициенты={bool(cm and cm.coef)}")
-        
+        print(f"Debug: analyze_section_with_filters вызван. uc={uc}, cm есть коэфф={bool(cm and cm.coef)}")
         if lf:
             rdf = lf.filter_routes(rdf)
             if rdf.empty:
-                logger.warning(f"После фильтрации не осталось маршрутов для участка {sn}")
                 return rdf, None
-        
         rdf = rdf.copy()
-        
-        if uc and cm and cm.coef:
-            logger.info(f"Применение коэффициентов. Загружено: {len(cm.coef)}")
+        if uc and cm and cm.coef:  # Проверяем что коэффициенты загружены
+            print(f"Debug: Применяем коэффициенты. Загружено коэфф: {len(cm.coef)}")
             rdf['Коэффициент'] = 1.0
             rdf['Факт. удельный исходный'] = rdf['Фактический удельный']
             applied_count = 0
-            
             for i, r in rdf.iterrows():
-                # Попытка извлечь серию и номер локомотива
                 if 'Серия локомотива' in rdf.columns and 'Номер локомотива' in rdf.columns:
                     s = str(r['Серия локомотива']) if pd.notna(r['Серия локомотива']) else ''
                     n = r['Номер локомотива']
@@ -248,23 +163,20 @@ class InteractiveNormsAnalyzer:
                                 n = int(n)
                             co = cm.get_coefficient(s, n)
                             rdf.at[i, 'Коэффициент'] = co
-                            if co != 1.0:
+                            if co != 1.0:  # Применяем коэффициент только если он не равен 1.0
                                 rdf.at[i, 'Фактический удельный'] = rdf.at[i, 'Фактический удельный'] / co
                                 applied_count += 1
-                                if applied_count <= 3:
-                                    logger.debug(f"Применен коэфф {co:.3f} к локомотиву {s} №{n}")
+                                if applied_count <= 3:  # Показываем первые 3 для отладки
+                                    print(f"Debug: Применен коэфф {co:.3f} к локомотиву {s} №{n}")
                         except (ValueError, TypeError) as e:
-                            logger.error(f"Ошибка обработки локомотива: {e}")
+                            print(f"Debug: Ошибка обработки локомотива: {e}")
                             continue
-            
-            logger.info(f"Применено коэффициентов: {applied_count}")
+            print(f"Debug: Применено коэффициентов: {applied_count}")
         else:
-            logger.info("Коэффициенты не применяются")
-        
+            print("Debug: Коэффициенты НЕ применяются")
         return self.analyze_section(sn, rdf, norms)
     
     def create_interactive_plot(self, sn, ra, nf):
-        """Создание интерактивного графика (без изменений логики, только обновление для новых данных)"""
         section_name = sn
         routes = ra
         norms = nf
@@ -333,8 +245,7 @@ class InteractiveNormsAnalyzer:
             hover_text = (
                 f"Маршрут №{r['Номер маршрута']}<br>"
                 f"Дата: {r['Дата маршрута']}<br>"
-                f"Депо: {r.get('Депо', '')}<br>"
-                f"ID: {r.get('Идентификатор', '')}<br>"
+                f"Локомотив: {r.get('Серия локомотива', '')} №{r.get('Номер локомотива', '')}<br>"
             )
             
             # Добавляем информацию о коэффициенте, если он есть
@@ -361,7 +272,7 @@ class InteractiveNormsAnalyzer:
                 ), row=1, col=1
             )
 
-        # Группировка для нижнего графика (остается без изменений)
+        # Группировка для нижнего графика
         dg = {
             'Экономия +30% и более': vr[vr['Отклонение, %'] >= 30],
             'Экономия +20% до +30%': vr[(vr['Отклонение, %'] >= 20) & (vr['Отклонение, %'] < 30)],
@@ -385,7 +296,13 @@ class InteractiveNormsAnalyzer:
             if len(gd) > 0:
                 ht = []
                 for _, r in gd.iterrows():
-                    txt = f"Маршрут №{r['Номер маршрута']}<br>Дата: {r['Дата маршрута']}<br>Норма №{r.get('Номер нормы', 'N/A')}<br>"
+                    txt = f"Маршрут №{r['Номер маршрута']}<br>Дата: {r['Дата маршрута']}<br>Норма №{r['Номер нормы']}<br>"
+                    if 'Серия локомотива' in r and pd.notna(r['Серия локомотива']):
+                        txt += f"Локомотив: {r['Серия локомотива']} "
+                    if 'Номер локомотива' in r and pd.notna(r['Номер локомотива']):
+                        txt += f"№{r['Номер локомотива']}<br>"
+                    else:
+                        txt += "<br>"
                     
                     # Добавляем информацию о коэффициенте
                     if 'Коэффициент' in r.index and pd.notna(r['Коэффициент']) and r['Коэффициент'] != 1.0:
@@ -395,7 +312,6 @@ class InteractiveNormsAnalyzer:
                     
                     txt += f"Нажатие: {r['Нажатие на ось']:.2f} т/ось<br>Отклонение: {r['Отклонение, %']:.1f}%"
                     ht.append(txt)
-                    
                 fig.add_trace(
                     go.Scatter(
                         x=gd['Нажатие на ось'], y=gd['Отклонение, %'],
@@ -407,7 +323,7 @@ class InteractiveNormsAnalyzer:
                     ), row=2, col=1
                 )
 
-        # Добавление линий границ на нижний график (без изменений)
+        # Добавление линий границ на нижний график
         xr = [vr['Нажатие на ось'].min() - 1, vr['Нажатие на ось'].max() + 1]
         fig.add_trace(go.Scatter(x=xr, y=[5, 5], mode='lines', line=dict(color='#22C55E', dash='dash', width=2), showlegend=False, hoverinfo='skip'), row=2, col=1)
         fig.add_trace(go.Scatter(x=xr, y=[-5, -5], mode='lines', line=dict(color='#22C55E', dash='dash', width=2), showlegend=False, hoverinfo='skip'), row=2, col=1)
@@ -425,34 +341,18 @@ class InteractiveNormsAnalyzer:
         return fig
     
     def get_sections_list(self):
-        """Получение списка участков"""
         if self.rdf is None:
             return []
         return self.rdf['Наименование участка'].unique().tolist()
     
     def analyze_single_section(self, sn):
-        """Анализ одного участка"""
-        if self.rdf is None:
-            return None, None, "Данные не загружены"
-            
+        if sn not in self.nd:
+            return None, None, "Нормы для участка не найдены"
         sr = self.rdf[self.rdf['Наименование участка'] == sn].copy()
         if sr.empty:
             return None, None, "Нет маршрутов для участка"
-            
-        # Создаем фиктивные нормы для совместимости
-        norms = {}
-        unique_norm_ids = sr['Номер нормы'].dropna().unique()
-        for norm_id in unique_norm_ids:
-            norm_data = self.get_norm_by_id(int(norm_id))
-            if norm_data:
-                norms[norm_id] = norm_data
-                
-        if not norms:
-            return None, None, "Не найдены соответствующие нормы"
-            
-        ra, nf = self.analyze_section(sn, sr, norms)
+        ra, nf = self.analyze_section(sn, sr, self.nd[sn])
         fig = self.create_interactive_plot(sn, ra, nf)
-        
         vr = ra[ra['Статус'] != 'Не определен']
         ds = {
             'economy_strong': len(vr[vr['Отклонение, %'] >= 30]),
