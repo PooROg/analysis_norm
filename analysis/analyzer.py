@@ -1,4 +1,4 @@
-# analysis/analyzer.py (обновленный)
+# analysis/analyzer.py (обновленный с подсчетом маршрутов по нормам)
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import pandas as pd
@@ -112,6 +112,99 @@ class InteractiveNormsAnalyzer:
         """Возвращает список норм для участка"""
         return self.sections_norms_map.get(section_name, [])
     
+    def get_norms_with_counts_for_section(self, section_name: str, single_section_only: bool = False) -> List[Tuple[str, int]]:
+        """Возвращает список норм для участка с количеством маршрутов"""
+        if self.routes_df is None or self.routes_df.empty:
+            return []
+        
+        # Фильтруем данные по участку
+        section_routes = self.routes_df[self.routes_df['Наименование участка'] == section_name].copy()
+        
+        if section_routes.empty:
+            return []
+        
+        # Если нужны только маршруты с одним участком
+        if single_section_only:
+            # Подсчитываем количество участков для каждого маршрута
+            route_section_counts = self.routes_df.groupby(['Номер маршрута', 'Дата маршрута']).size()
+            single_section_routes = route_section_counts[route_section_counts == 1].index
+            
+            # Фильтруем только маршруты с одним участком
+            section_routes = section_routes.set_index(['Номер маршрута', 'Дата маршрута'])
+            section_routes = section_routes.loc[section_routes.index.intersection(single_section_routes)]
+            section_routes = section_routes.reset_index()
+        
+        if section_routes.empty:
+            return []
+        
+        # Подсчитываем количество маршрутов для каждой нормы
+        norm_counts = section_routes['Номер нормы'].value_counts()
+        
+        # Формируем список норм с количествами
+        norms_with_counts = []
+        for norm in self.sections_norms_map.get(section_name, []):
+            count = norm_counts.get(int(norm) if norm.isdigit() else norm, 0)
+            norms_with_counts.append((norm, count))
+        
+        # Сортируем по номеру нормы
+        norms_with_counts.sort(key=lambda x: int(x[0]) if x[0].isdigit() else float('inf'))
+        
+        logger.debug(f"Нормы для участка '{section_name}' (только один участок: {single_section_only}): {norms_with_counts}")
+        return norms_with_counts
+    
+    def get_routes_count_for_section(self, section_name: str, single_section_only: bool = False) -> int:
+        """Возвращает общее количество маршрутов для участка"""
+        if self.routes_df is None or self.routes_df.empty:
+            return 0
+        
+        # Фильтруем данные по участку
+        section_routes = self.routes_df[self.routes_df['Наименование участка'] == section_name].copy()
+        
+        if section_routes.empty:
+            return 0
+        
+        # Если нужны только маршруты с одним участком
+        if single_section_only:
+            # Подсчитываем количество участков для каждого маршрута
+            route_section_counts = self.routes_df.groupby(['Номер маршрута', 'Дата маршрута']).size()
+            single_section_routes = route_section_counts[route_section_counts == 1].index
+            
+            # Фильтруем только маршруты с одним участком
+            section_routes = section_routes.set_index(['Номер маршрута', 'Дата маршрута'])
+            section_routes = section_routes.loc[section_routes.index.intersection(single_section_routes)]
+            
+            return len(section_routes)
+        
+        return len(section_routes)
+    
+    def get_norm_routes_count_for_section(self, section_name: str, norm_id: str, single_section_only: bool = False) -> int:
+        """Возвращает количество маршрутов для конкретной нормы в участке"""
+        if self.routes_df is None or self.routes_df.empty:
+            return 0
+        
+        # Фильтруем данные по участку и норме
+        section_norm_routes = self.routes_df[
+            (self.routes_df['Наименование участка'] == section_name) &
+            (self.routes_df['Номер нормы'].astype(str) == str(norm_id))
+        ].copy()
+        
+        if section_norm_routes.empty:
+            return 0
+        
+        # Если нужны только маршруты с одним участком
+        if single_section_only:
+            # Подсчитываем количество участков для каждого маршрута
+            route_section_counts = self.routes_df.groupby(['Номер маршрута', 'Дата маршрута']).size()
+            single_section_routes = route_section_counts[route_section_counts == 1].index
+            
+            # Фильтруем только маршруты с одним участком
+            section_norm_routes = section_norm_routes.set_index(['Номер маршрута', 'Дата маршрута'])
+            section_norm_routes = section_norm_routes.loc[section_norm_routes.index.intersection(single_section_routes)]
+            
+            return len(section_norm_routes)
+        
+        return len(section_norm_routes)
+    
     def get_norm_info(self, norm_id: str) -> Optional[Dict]:
         """Возвращает информацию о норме"""
         norm_data = self.norm_storage.get_norm(norm_id)
@@ -141,11 +234,12 @@ class InteractiveNormsAnalyzer:
         return info
     
     def analyze_section(self, section_name: str, norm_id: Optional[str] = None,
+                       single_section_only: bool = False,
                        locomotive_filter: Optional[LocomotiveFilter] = None,
                        coefficients_manager: Optional[LocomotiveCoefficientsManager] = None,
                        use_coefficients: bool = False) -> Tuple[Optional[go.Figure], Optional[Dict], Optional[str]]:
-        """Анализирует участок с возможностью выбора конкретной нормы"""
-        logger.info(f"Анализ участка: {section_name}, норма: {norm_id}")
+        """Анализирует участок с возможностью выбора конкретной нормы и фильтрации по одному участку"""
+        logger.info(f"Анализ участка: {section_name}, норма: {norm_id}, только один участок: {single_section_only}")
         
         if self.routes_df is None or self.routes_df.empty:
             return None, None, "Данные маршрутов не загружены"
@@ -159,13 +253,28 @@ class InteractiveNormsAnalyzer:
             if section_routes.empty:
                 return None, None, f"Нет данных для участка {section_name}"
             
+            # Фильтрация по маршрутам с одним участком
+            if single_section_only:
+                route_section_counts = self.routes_df.groupby(['Номер маршрута', 'Дата маршрута']).size()
+                single_section_routes = route_section_counts[route_section_counts == 1].index
+                
+                section_routes = section_routes.set_index(['Номер маршрута', 'Дата маршрута'])
+                section_routes = section_routes.loc[section_routes.index.intersection(single_section_routes)]
+                section_routes = section_routes.reset_index()
+                
+                if section_routes.empty:
+                    return None, None, f"Нет маршрутов с одним участком для {section_name}"
+                
+                logger.debug(f"После фильтрации по одному участку осталось {len(section_routes)} маршрутов")
+            
             # Если указана конкретная норма, фильтруем по ней
             if norm_id:
                 section_routes = section_routes[
                     section_routes['Номер нормы'].astype(str) == str(norm_id)
                 ]
                 if section_routes.empty:
-                    return None, None, f"Нет данных для участка {section_name} с нормой {norm_id}"
+                    filter_text = " с одним участком" if single_section_only else ""
+                    return None, None, f"Нет маршрутов{filter_text} для участка {section_name} с нормой {norm_id}"
             
             logger.debug(f"Найдено {len(section_routes)} маршрутов для участка {section_name}")
             
@@ -188,13 +297,13 @@ class InteractiveNormsAnalyzer:
                 return None, None, f"Не удалось проанализировать участок {section_name}"
             
             # Создаем интерактивный график
-            fig = self._create_interactive_plot(section_name, analyzed_data, norm_functions, norm_id)
+            fig = self._create_interactive_plot(section_name, analyzed_data, norm_functions, norm_id, single_section_only)
             
             # Вычисляем статистику
             statistics = self._calculate_section_statistics(analyzed_data)
             
             # Сохраняем результаты
-            analysis_key = f"{section_name}_{norm_id}" if norm_id else section_name
+            analysis_key = f"{section_name}_{norm_id}_{single_section_only}" if norm_id else f"{section_name}_{single_section_only}"
             self.analyzed_results[analysis_key] = {
                 'routes': analyzed_data,
                 'norms': norm_functions,
@@ -372,10 +481,12 @@ class InteractiveNormsAnalyzer:
             return None
     
     def _create_interactive_plot(self, section_name: str, routes_df: pd.DataFrame, 
-                               norm_functions: Dict, specific_norm_id: Optional[str] = None) -> go.Figure:
+                               norm_functions: Dict, specific_norm_id: Optional[str] = None,
+                               single_section_only: bool = False) -> go.Figure:
         """Создает интерактивный график для участка"""
         title_suffix = f" (норма {specific_norm_id})" if specific_norm_id else ""
-        logger.debug(f"Создание графика для участка {section_name}{title_suffix}")
+        filter_suffix = " [только один участок]" if single_section_only else ""
+        logger.debug(f"Создание графика для участка {section_name}{title_suffix}{filter_suffix}")
         
         fig = make_subplots(
             rows=2, cols=1,
@@ -383,7 +494,7 @@ class InteractiveNormsAnalyzer:
             vertical_spacing=0.05,
             row_heights=[0.6, 0.4],
             subplot_titles=(
-                f"Нормы расхода для участка: {section_name}{title_suffix}",
+                f"Нормы расхода для участка: {section_name}{title_suffix}{filter_suffix}",
                 "Отклонение фактического расхода от нормы"
             )
         )

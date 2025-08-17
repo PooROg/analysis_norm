@@ -1,4 +1,4 @@
-# gui/interface.py (обновленный с интеграцией route_processor.py)
+# gui/interface.py (обновленный с подсчетом маршрутов и фильтром по одному участку)
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import tkinter as tk
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 class NormsAnalyzerGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("Анализатор норм расхода электроэнергии РЖД (с интеграцией route_processor.py)")
+        self.root.title("Анализатор норм расхода электроэнергии РЖД (с подсчетом маршрутов)")
         self.root.geometry("1400x900")
         
         # Основные компоненты
@@ -40,6 +40,9 @@ class NormsAnalyzerGUI:
         self.route_html_files = []
         self.norm_html_files = []
         
+        # Переменная для фильтра "только один участок"
+        self.single_section_only = tk.BooleanVar(value=False)
+        
         # Создаем интерфейс
         self.create_widgets()
         self.setup_styles()
@@ -50,7 +53,7 @@ class NormsAnalyzerGUI:
         # Привязываем обработчик закрытия окна
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         
-        logger.info("GUI инициализирован с интеграцией route_processor.py")
+        logger.info("GUI инициализирован с подсчетом маршрутов и фильтром по одному участку")
     
     def setup_logging(self):
         """Настраивает логирование для отображения в GUI"""
@@ -176,7 +179,7 @@ class NormsAnalyzerGUI:
         """Создает секцию управления анализом"""
         control_frame = ttk.LabelFrame(parent, text="Управление анализом", padding="10")
         control_frame.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(0, 10))
-        control_frame.rowconfigure(9, weight=1)
+        control_frame.rowconfigure(10, weight=1)
         
         # Выбор участка
         ttk.Label(control_frame, text="Участок:", style='Header.TLabel').grid(row=0, column=0, sticky=tk.W, pady=(0, 5))
@@ -186,10 +189,19 @@ class NormsAnalyzerGUI:
         self.section_combo.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
         self.section_combo.bind('<<ComboboxSelected>>', self.on_section_selected)
         
+        # Фильтр по одному участку
+        self.single_section_check = ttk.Checkbutton(
+            control_frame,
+            text="Только маршруты с одним участком",
+            variable=self.single_section_only,
+            command=self.on_single_section_filter_changed
+        )
+        self.single_section_check.grid(row=2, column=0, sticky=tk.W, pady=(0, 10))
+        
         # Выбор нормы
-        ttk.Label(control_frame, text="Норма (опционально):", style='Header.TLabel').grid(row=2, column=0, sticky=tk.W, pady=(0, 5))
+        ttk.Label(control_frame, text="Норма (опционально):", style='Header.TLabel').grid(row=3, column=0, sticky=tk.W, pady=(0, 5))
         norm_selection_frame = ttk.Frame(control_frame)
-        norm_selection_frame.grid(row=3, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+        norm_selection_frame.grid(row=4, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
         norm_selection_frame.columnconfigure(0, weight=1)
         
         self.norm_var = tk.StringVar()
@@ -202,35 +214,39 @@ class NormsAnalyzerGUI:
                                          command=self.show_norm_info, state='disabled')
         self.norm_info_button.grid(row=0, column=1)
         
+        # Информация о количестве маршрутов для участка
+        self.section_info_label = ttk.Label(control_frame, text="", style='Warning.TLabel')
+        self.section_info_label.grid(row=5, column=0, sticky=tk.W, pady=(0, 10))
+        
         # Кнопки управления
         self.analyze_button = ttk.Button(control_frame, text="Анализировать участок", 
                                        command=self.analyze_section, state='disabled')
-        self.analyze_button.grid(row=4, column=0, sticky=(tk.W, tk.E), pady=(0, 5))
+        self.analyze_button.grid(row=6, column=0, sticky=(tk.W, tk.E), pady=(0, 5))
         
         self.filter_button = ttk.Button(control_frame, text="Фильтр локомотивов", 
                                       command=self.open_locomotive_filter, state='disabled')
-        self.filter_button.grid(row=5, column=0, sticky=(tk.W, tk.E), pady=(0, 5))
+        self.filter_button.grid(row=7, column=0, sticky=(tk.W, tk.E), pady=(0, 5))
         
         self.edit_norms_button = ttk.Button(control_frame, text="Редактировать нормы", 
                                           command=self.edit_norms, state='disabled')
-        self.edit_norms_button.grid(row=6, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+        self.edit_norms_button.grid(row=8, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
         
         # Информация о фильтрах
         self.filter_info_label = ttk.Label(control_frame, text="", style='Warning.TLabel')
-        self.filter_info_label.grid(row=7, column=0, sticky=tk.W, pady=(0, 5))
+        self.filter_info_label.grid(row=9, column=0, sticky=tk.W, pady=(0, 5))
         
         # Статистика
-        ttk.Label(control_frame, text="Статистика:", style='Header.TLabel').grid(row=8, column=0, sticky=tk.W, pady=(10, 5))
-        self.stats_text = tk.Text(control_frame, width=45, height=10, wrap=tk.WORD)
-        self.stats_text.grid(row=9, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 10))
+        ttk.Label(control_frame, text="Статистика:", style='Header.TLabel').grid(row=10, column=0, sticky=tk.W, pady=(10, 5))
+        self.stats_text = tk.Text(control_frame, width=45, height=8, wrap=tk.WORD)
+        self.stats_text.grid(row=11, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 10))
         
         stats_scrollbar = ttk.Scrollbar(control_frame, orient='vertical', command=self.stats_text.yview)
-        stats_scrollbar.grid(row=9, column=1, sticky=(tk.N, tk.S), pady=(0, 10))
+        stats_scrollbar.grid(row=11, column=1, sticky=(tk.N, tk.S), pady=(0, 10))
         self.stats_text.configure(yscrollcommand=stats_scrollbar.set)
         
         # Кнопки экспорта
         export_frame = ttk.Frame(control_frame)
-        export_frame.grid(row=10, column=0, sticky=(tk.W, tk.E), pady=(10, 0))
+        export_frame.grid(row=12, column=0, sticky=(tk.W, tk.E), pady=(10, 0))
         
         self.export_excel_button = ttk.Button(export_frame, text="Экспорт в Excel", 
                                             command=self.export_to_excel, state='disabled')
@@ -473,27 +489,73 @@ class NormsAnalyzerGUI:
         if not section:
             return
         
-        # Обновляем список норм для выбранного участка
-        norms = self.analyzer.get_norms_for_section(section)
-        norm_values = ["Все нормы"] + norms
+        # Обновляем информацию о количестве маршрутов и нормы
+        self._update_norms_and_section_info()
+        
+        logger.info(f"Выбран участок: {section}")
+    
+    def on_single_section_filter_changed(self):
+        """Обработчик изменения фильтра по одному участку"""
+        section = self.section_var.get()
+        if section:
+            # Обновляем информацию о количестве маршрутов и нормы
+            self._update_norms_and_section_info()
+            
+            filter_status = "включен" if self.single_section_only.get() else "выключен"
+            logger.info(f"Фильтр 'только один участок' {filter_status}")
+    
+    def _update_norms_and_section_info(self):
+        """Обновляет список норм с количеством маршрутов и информацию об участке"""
+        section = self.section_var.get()
+        if not section:
+            return
+        
+        single_section_filter = self.single_section_only.get()
+        
+        # Получаем нормы с количеством маршрутов
+        norms_with_counts = self.analyzer.get_norms_with_counts_for_section(section, single_section_filter)
+        
+        # Формируем список для отображения
+        norm_values = ["Все нормы"]
+        for norm_id, count in norms_with_counts:
+            norm_values.append(f"Норма {norm_id} ({count} маршрутов)")
+        
+        # Обновляем combo box
         self.norm_combo['values'] = norm_values
         self.norm_var.set("Все нормы")
         self.norm_info_button.config(state='disabled')
         
-        logger.info(f"Выбран участок: {section}, доступных норм: {len(norms)}")
+        # Обновляем информацию об участке
+        total_routes = self.analyzer.get_routes_count_for_section(section, single_section_filter)
+        filter_text = " (только один участок)" if single_section_filter else ""
+        self.section_info_label.config(text=f"Участок: {total_routes} маршрутов{filter_text}")
+        
+        logger.debug(f"Обновлены нормы для участка {section}: {len(norms_with_counts)} норм, {total_routes} маршрутов")
     
     def on_norm_selected(self, event=None):
         """Обработчик выбора нормы"""
-        norm = self.norm_var.get()
-        if norm and norm != "Все нормы":
+        norm_text = self.norm_var.get()
+        if norm_text and norm_text != "Все нормы":
             self.norm_info_button.config(state='normal')
         else:
             self.norm_info_button.config(state='disabled')
     
+    def _extract_norm_id_from_text(self, norm_text: str) -> Optional[str]:
+        """Извлекает ID нормы из текста вида 'Норма 123 (45 маршрутов)'"""
+        if not norm_text or norm_text == "Все нормы":
+            return None
+        
+        # Ищем паттерн "Норма XXXX"
+        import re
+        match = re.search(r'Норма (\d+)', norm_text)
+        return match.group(1) if match else None
+    
     def show_norm_info(self):
         """Показывает информацию о выбранной норме"""
-        norm_id = self.norm_var.get()
-        if not norm_id or norm_id == "Все нормы":
+        norm_text = self.norm_var.get()
+        norm_id = self._extract_norm_id_from_text(norm_text)
+        
+        if not norm_id:
             return
         
         norm_info = self.analyzer.get_norm_info(norm_id)
@@ -542,9 +604,13 @@ class NormsAnalyzerGUI:
                     content += f"{key}: {value}\n"
         
         # Статистика использования нормы
-        routes_count = self.analyzer.get_norm_routes_count(norm_id)
-        content += f"\nИСПОЛЬЗОВАНИЕ НОРМЫ:\n" + "-" * 30 + "\n"
-        content += f"Количество маршрутов с этой нормой: {routes_count}\n"
+        section = self.section_var.get()
+        single_section_filter = self.single_section_only.get()
+        if section:
+            routes_count = self.analyzer.get_norm_routes_count_for_section(section, norm_id, single_section_filter)
+            content += f"\nИСПОЛЬЗОВАНИЕ НОРМЫ:\n" + "-" * 30 + "\n"
+            filter_text = " (только один участок)" if single_section_filter else ""
+            content += f"Маршрутов на участке '{section}'{filter_text}: {routes_count}\n"
         
         info_text.insert(1.0, content)
         info_text.config(state='disabled')
@@ -565,33 +631,39 @@ class NormsAnalyzerGUI:
             return
         
         # Определяем норму для анализа
-        norm_id = self.norm_var.get()
-        if norm_id == "Все нормы":
-            norm_id = None
+        norm_text = self.norm_var.get()
+        norm_id = self._extract_norm_id_from_text(norm_text)
         
-        logger.info(f"Начинаем анализ участка: {section}, норма: {norm_id}")
+        single_section_filter = self.single_section_only.get()
+        
+        filter_info = " (только один участок)" if single_section_filter else ""
+        norm_info = f" с нормой {norm_id}" if norm_id else ""
+        
+        logger.info(f"Начинаем анализ участка: {section}{norm_info}{filter_info}")
         
         # Запускаем анализ в отдельном потоке
-        threading.Thread(target=self._analyze_section_thread, args=(section, norm_id), daemon=True).start()
+        threading.Thread(target=self._analyze_section_thread, 
+                        args=(section, norm_id, single_section_filter), daemon=True).start()
     
-    def _analyze_section_thread(self, section_name: str, norm_id: Optional[str]):
+    def _analyze_section_thread(self, section_name: str, norm_id: Optional[str], single_section_only: bool):
         """Поток анализа участка"""
         try:
             fig, statistics, error = self.analyzer.analyze_section(
                 section_name,
                 norm_id=norm_id,
+                single_section_only=single_section_only,
                 locomotive_filter=self.locomotive_filter,
                 coefficients_manager=self.coefficients_manager,
                 use_coefficients=self.use_coefficients
             )
             
-            self.root.after(0, self._update_analysis_results, fig, statistics, error, section_name, norm_id)
+            self.root.after(0, self._update_analysis_results, fig, statistics, error, section_name, norm_id, single_section_only)
             
         except Exception as e:
             logger.error(f"Ошибка анализа участка {section_name}: {e}")
-            self.root.after(0, self._update_analysis_results, None, None, str(e), section_name, norm_id)
+            self.root.after(0, self._update_analysis_results, None, None, str(e), section_name, norm_id, single_section_only)
     
-    def _update_analysis_results(self, fig, statistics, error, section_name: str, norm_id: Optional[str]):
+    def _update_analysis_results(self, fig, statistics, error, section_name: str, norm_id: Optional[str], single_section_only: bool):
         """Обновляет результаты анализа"""
         if error:
             messagebox.showerror("Ошибка", error)
@@ -614,10 +686,11 @@ class NormsAnalyzerGUI:
         self.update_statistics(statistics)
         
         # Обновляем информацию о графике
-        self.update_plot_info(section_name, statistics, norm_id)
+        self.update_plot_info(section_name, statistics, norm_id, single_section_only)
         
         norm_text = f" с нормой {norm_id}" if norm_id else ""
-        logger.info(f"Анализ участка {section_name}{norm_text} завершен")
+        filter_text = " (только один участок)" if single_section_only else ""
+        logger.info(f"Анализ участка {section_name}{norm_text}{filter_text} завершен")
     
     def open_locomotive_filter(self):
         """Открывает диалог фильтра локомотивов"""
@@ -684,13 +757,15 @@ class NormsAnalyzerGUI:
         
         self.stats_text.insert(1.0, text)
     
-    def update_plot_info(self, section_name: str, stats: Dict, norm_id: Optional[str] = None):
+    def update_plot_info(self, section_name: str, stats: Dict, norm_id: Optional[str] = None, single_section_only: bool = False):
         """Обновляет информацию о графике"""
         self.plot_info.delete(1.0, tk.END)
         
         norm_text = f" (норма {norm_id})" if norm_id else ""
+        filter_text = " [только один участок]" if single_section_only else ""
+        
         text = "ИНТЕРАКТИВНЫЙ ГРАФИК\n" + "=" * 40 + "\n\n"
-        text += f"Участок: {section_name}{norm_text}\n\n"
+        text += f"Участок: {section_name}{norm_text}{filter_text}\n\n"
         text += "Возможности графика:\n"
         text += "• Наведите курсор на точку для просмотра подробной информации\n"
         text += "• Используйте колесо мыши для масштабирования\n"
@@ -711,12 +786,17 @@ class NormsAnalyzerGUI:
         text += "• Красные линии - границы критических отклонений (±30%)\n\n"
         
         # Информация о данных
-        section_routes_count = self.analyzer.get_section_routes_count(section_name)
+        total_section_routes = self.analyzer.get_routes_count_for_section(section_name, False)
+        filtered_section_routes = self.analyzer.get_routes_count_for_section(section_name, single_section_only)
+        
         text += f"СТАТИСТИКА УЧАСТКА:\n" + "-" * 30 + "\n"
-        text += f"Всего маршрутов участка: {section_routes_count}\n"
+        text += f"Всего маршрутов участка: {total_section_routes}\n"
+        if single_section_only:
+            text += f"С одним участком: {filtered_section_routes}\n"
         text += f"Обработано в анализе: {stats['processed']}\n"
+        
         if norm_id:
-            norm_routes_count = self.analyzer.get_norm_routes_count(norm_id)
+            norm_routes_count = self.analyzer.get_norm_routes_count_for_section(section_name, norm_id, single_section_only)
             text += f"Маршрутов с нормой {norm_id}: {norm_routes_count}\n"
         
         text += "\nДля просмотра в полноэкранном режиме\nнажмите 'Открыть график в браузере'"
@@ -727,32 +807,34 @@ class NormsAnalyzerGUI:
         """Обновляет информацию о графике (по умолчанию)"""
         self.plot_info.delete(1.0, tk.END)
         
-        text = "АНАЛИЗАТОР НОРМ С ИНТЕГРАЦИЕЙ ROUTE_PROCESSOR.PY\n" + "=" * 55 + "\n\n"
+        text = "АНАЛИЗАТОР НОРМ С ПОДСЧЕТОМ МАРШРУТОВ\n" + "=" * 50 + "\n\n"
+        text += "Новые возможности:\n\n"
+        text += "1. Подсчет маршрутов по нормам\n"
+        text += "   • В списке норм отображается количество маршрутов\n"
+        text += "   • Формат: 'Норма 123 (45 маршрутов)'\n"
+        text += "   • Обновляется автоматически при смене фильтров\n\n"
+        text += "2. Фильтр по одному участку\n"
+        text += "   • Галка 'Только маршруты с одним участком'\n"
+        text += "   • Позволяет анализировать только маршруты\n"
+        text += "     которые проходят только один участок\n"
+        text += "   • Полезно для 'чистого' анализа норм\n\n"
+        text += "3. Динамическое обновление информации\n"
+        text += "   • Количество маршрутов обновляется при изменении фильтра\n"
+        text += "   • Отображается общее количество маршрутов участка\n"
+        text += "   • Показывается количество после фильтрации\n\n"
         text += "Для начала работы:\n\n"
-        text += "1. Выберите HTML файлы маршрутов\n"
-        text += "   • Можно выбрать несколько файлов\n"
-        text += "   • Файлы будут автоматически очищены от лишнего кода\n"
-        text += "   • Дубликаты маршрутов будут отфильтрованы\n"
-        text += "   • Участки будут объединены как в route_processor.py\n\n"
-        text += "2. Выберите HTML файлы норм (опционально)\n"
-        text += "   • Нормы будут добавлены в высокопроизводительное хранилище\n"
-        text += "   • Существующие нормы будут обновлены при необходимости\n\n"
-        text += "3. Загрузите выбранные файлы\n\n"
-        text += "4. Выберите участок для анализа\n"
-        text += "   • После выбора участка появится список доступных норм\n"
-        text += "   • Можно анализировать все нормы сразу или конкретную\n\n"
-        text += "5. Настройте фильтры локомотивов (опционально)\n\n"
+        text += "1. Выберите и загрузите HTML файлы маршрутов\n"
+        text += "2. Выберите и загрузите HTML файлы норм (опционально)\n"
+        text += "3. Выберите участок для анализа\n"
+        text += "4. Настройте фильтр 'только один участок' при необходимости\n"
+        text += "5. Выберите конкретную норму или оставьте 'Все нормы'\n"
         text += "6. Анализируйте результаты на интерактивном графике\n\n"
-        text += "НОВЫЕ ВОЗМОЖНОСТИ:\n" + "-" * 30 + "\n"
-        text += "• Полная интеграция с route_processor.py\n"
-        text += "• Объединение одинаковых участков в маршрутах\n"
-        text += "• Выбор конкретной нормы для анализа\n"
-        text += "• Просмотр подробной информации о нормах\n"
-        text += "• Корректный экспорт в Excel с красным форматированием\n"
-        text += "• Расширенная статистика по всем категориям отклонений\n"
-        text += "• Автоматическая очистка HTML файлов\n"
-        text += "• Фильтрация по идентификаторам маршрутов\n"
-        text += "• Высокопроизводительное хранилище норм"
+        text += "ДОПОЛНИТЕЛЬНЫЕ ФУНКЦИИ:\n" + "-" * 30 + "\n"
+        text += "• Подробная информация о нормах (кнопка 'Инфо о норме')\n"
+        text += "• Фильтрация локомотивов с коэффициентами\n"
+        text += "• Экспорт в Excel с форматированием\n"
+        text += "• Интерактивные графики с hover-эффектами\n"
+        text += "• Расширенная статистика по всем категориям отклонений"
         
         self.plot_info.insert(1.0, text)
     
@@ -1022,6 +1104,7 @@ class NormsAnalyzerGUI:
         # Статистика по датам
         if 'Дата маршрута' in routes_data.columns:
             try:
+                import pandas as pd
                 dates_stats = pd.to_datetime(routes_data['Дата маршрута'], format='%d.%m.%Y', errors='coerce').dt.date.value_counts().sort_index()
                 content += "СТАТИСТИКА ПО ДАТАМ:\n" + "-" * 30 + "\n"
                 content += f"Диапазон дат: {dates_stats.index.min()} - {dates_stats.index.max()}\n"
