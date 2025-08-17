@@ -1,4 +1,4 @@
-# gui/interface.py (обновленный)
+# gui/interface.py (обновленный с интеграцией route_processor.py)
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import tkinter as tk
@@ -24,8 +24,8 @@ logger = logging.getLogger(__name__)
 class NormsAnalyzerGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("Анализатор норм расхода электроэнергии РЖД (HTML версия)")
-        self.root.geometry("1400x800")
+        self.root.title("Анализатор норм расхода электроэнергии РЖД (с интеграцией route_processor.py)")
+        self.root.geometry("1400x900")
         
         # Основные компоненты
         self.analyzer = InteractiveNormsAnalyzer()
@@ -50,7 +50,7 @@ class NormsAnalyzerGUI:
         # Привязываем обработчик закрытия окна
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         
-        logger.info("GUI инициализирован")
+        logger.info("GUI инициализирован с интеграцией route_processor.py")
     
     def setup_logging(self):
         """Настраивает логирование для отображения в GUI"""
@@ -176,7 +176,7 @@ class NormsAnalyzerGUI:
         """Создает секцию управления анализом"""
         control_frame = ttk.LabelFrame(parent, text="Управление анализом", padding="10")
         control_frame.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(0, 10))
-        control_frame.rowconfigure(7, weight=1)
+        control_frame.rowconfigure(9, weight=1)
         
         # Выбор участка
         ttk.Label(control_frame, text="Участок:", style='Header.TLabel').grid(row=0, column=0, sticky=tk.W, pady=(0, 5))
@@ -186,35 +186,51 @@ class NormsAnalyzerGUI:
         self.section_combo.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
         self.section_combo.bind('<<ComboboxSelected>>', self.on_section_selected)
         
+        # Выбор нормы
+        ttk.Label(control_frame, text="Норма (опционально):", style='Header.TLabel').grid(row=2, column=0, sticky=tk.W, pady=(0, 5))
+        norm_selection_frame = ttk.Frame(control_frame)
+        norm_selection_frame.grid(row=3, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+        norm_selection_frame.columnconfigure(0, weight=1)
+        
+        self.norm_var = tk.StringVar()
+        self.norm_combo = ttk.Combobox(norm_selection_frame, textvariable=self.norm_var, 
+                                     state='readonly', width=30)
+        self.norm_combo.grid(row=0, column=0, sticky=(tk.W, tk.E), padx=(0, 5))
+        self.norm_combo.bind('<<ComboboxSelected>>', self.on_norm_selected)
+        
+        self.norm_info_button = ttk.Button(norm_selection_frame, text="Инфо о норме", 
+                                         command=self.show_norm_info, state='disabled')
+        self.norm_info_button.grid(row=0, column=1)
+        
         # Кнопки управления
         self.analyze_button = ttk.Button(control_frame, text="Анализировать участок", 
                                        command=self.analyze_section, state='disabled')
-        self.analyze_button.grid(row=2, column=0, sticky=(tk.W, tk.E), pady=(0, 5))
+        self.analyze_button.grid(row=4, column=0, sticky=(tk.W, tk.E), pady=(0, 5))
         
         self.filter_button = ttk.Button(control_frame, text="Фильтр локомотивов", 
                                       command=self.open_locomotive_filter, state='disabled')
-        self.filter_button.grid(row=3, column=0, sticky=(tk.W, tk.E), pady=(0, 5))
+        self.filter_button.grid(row=5, column=0, sticky=(tk.W, tk.E), pady=(0, 5))
         
         self.edit_norms_button = ttk.Button(control_frame, text="Редактировать нормы", 
                                           command=self.edit_norms, state='disabled')
-        self.edit_norms_button.grid(row=4, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+        self.edit_norms_button.grid(row=6, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
         
         # Информация о фильтрах
         self.filter_info_label = ttk.Label(control_frame, text="", style='Warning.TLabel')
-        self.filter_info_label.grid(row=5, column=0, sticky=tk.W, pady=(0, 5))
+        self.filter_info_label.grid(row=7, column=0, sticky=tk.W, pady=(0, 5))
         
         # Статистика
-        ttk.Label(control_frame, text="Статистика:", style='Header.TLabel').grid(row=6, column=0, sticky=tk.W, pady=(10, 5))
-        self.stats_text = tk.Text(control_frame, width=45, height=12, wrap=tk.WORD)
-        self.stats_text.grid(row=7, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 10))
+        ttk.Label(control_frame, text="Статистика:", style='Header.TLabel').grid(row=8, column=0, sticky=tk.W, pady=(10, 5))
+        self.stats_text = tk.Text(control_frame, width=45, height=10, wrap=tk.WORD)
+        self.stats_text.grid(row=9, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 10))
         
         stats_scrollbar = ttk.Scrollbar(control_frame, orient='vertical', command=self.stats_text.yview)
-        stats_scrollbar.grid(row=7, column=1, sticky=(tk.N, tk.S), pady=(0, 10))
+        stats_scrollbar.grid(row=9, column=1, sticky=(tk.N, tk.S), pady=(0, 10))
         self.stats_text.configure(yscrollcommand=stats_scrollbar.set)
         
         # Кнопки экспорта
         export_frame = ttk.Frame(control_frame)
-        export_frame.grid(row=8, column=0, sticky=(tk.W, tk.E), pady=(10, 0))
+        export_frame.grid(row=10, column=0, sticky=(tk.W, tk.E), pady=(10, 0))
         
         self.export_excel_button = ttk.Button(export_frame, text="Экспорт в Excel", 
                                             command=self.export_to_excel, state='disabled')
@@ -236,19 +252,27 @@ class NormsAnalyzerGUI:
         self.view_plot_button.pack(pady=(0, 10))
         
         # Информация о хранилище норм
-        norm_info_frame = ttk.LabelFrame(viz_frame, text="Информация о нормах", padding="5")
+        norm_info_frame = ttk.LabelFrame(viz_frame, text="Управление нормами", padding="5")
         norm_info_frame.pack(fill=tk.X, pady=(0, 10))
         
-        self.norm_info_button = ttk.Button(norm_info_frame, text="Информация о хранилище норм", 
-                                         command=self.show_norm_storage_info)
-        self.norm_info_button.pack(pady=5)
+        self.norm_storage_info_button = ttk.Button(norm_info_frame, text="Информация о хранилище норм", 
+                                                 command=self.show_norm_storage_info)
+        self.norm_storage_info_button.pack(pady=2)
         
         self.validate_norms_button = ttk.Button(norm_info_frame, text="Валидировать нормы", 
                                               command=self.validate_norms)
-        self.validate_norms_button.pack(pady=5)
+        self.validate_norms_button.pack(pady=2)
+        
+        # Информация о данных
+        data_info_frame = ttk.LabelFrame(viz_frame, text="Информация о данных", padding="5")
+        data_info_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        self.routes_info_button = ttk.Button(data_info_frame, text="Статистика маршрутов", 
+                                           command=self.show_routes_statistics)
+        self.routes_info_button.pack(pady=2)
         
         # Информация о графике
-        self.plot_info = tk.Text(viz_frame, width=60, height=25, wrap=tk.WORD)
+        self.plot_info = tk.Text(viz_frame, width=60, height=20, wrap=tk.WORD)
         self.plot_info.pack(fill=tk.BOTH, expand=True)
         
         # Инструкции по умолчанию
@@ -262,7 +286,7 @@ class NormsAnalyzerGUI:
         log_frame.columnconfigure(0, weight=1)
         
         # Текстовое поле для логов
-        self.log_text = tk.Text(log_frame, height=10, wrap=tk.WORD)
+        self.log_text = tk.Text(log_frame, height=8, wrap=tk.WORD)
         self.log_text.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         
         log_scrollbar = ttk.Scrollbar(log_frame, orient='vertical', command=self.log_text.yview)
@@ -388,10 +412,12 @@ class NormsAnalyzerGUI:
             self.analyze_button.config(state='normal')
             self.filter_button.config(state='normal')
             self.export_excel_button.config(state='normal')
+            self.routes_info_button.config(state='normal')
             
             # Создаем фильтр локомотивов
-            if hasattr(self.analyzer, 'routes_df') and self.analyzer.routes_df is not None:
-                self.locomotive_filter = LocomotiveFilter(self.analyzer.routes_df)
+            routes_data = self.analyzer.get_routes_data()
+            if not routes_data.empty:
+                self.locomotive_filter = LocomotiveFilter(routes_data)
             
             logger.info("Маршруты загружены успешно")
         else:
@@ -443,36 +469,129 @@ class NormsAnalyzerGUI:
     
     def on_section_selected(self, event=None):
         """Обработчик выбора участка"""
-        self.analyze_section()
+        section = self.section_var.get()
+        if not section:
+            return
+        
+        # Обновляем список норм для выбранного участка
+        norms = self.analyzer.get_norms_for_section(section)
+        norm_values = ["Все нормы"] + norms
+        self.norm_combo['values'] = norm_values
+        self.norm_var.set("Все нормы")
+        self.norm_info_button.config(state='disabled')
+        
+        logger.info(f"Выбран участок: {section}, доступных норм: {len(norms)}")
+    
+    def on_norm_selected(self, event=None):
+        """Обработчик выбора нормы"""
+        norm = self.norm_var.get()
+        if norm and norm != "Все нормы":
+            self.norm_info_button.config(state='normal')
+        else:
+            self.norm_info_button.config(state='disabled')
+    
+    def show_norm_info(self):
+        """Показывает информацию о выбранной норме"""
+        norm_id = self.norm_var.get()
+        if not norm_id or norm_id == "Все нормы":
+            return
+        
+        norm_info = self.analyzer.get_norm_info(norm_id)
+        if not norm_info:
+            messagebox.showwarning("Предупреждение", f"Информация о норме {norm_id} не найдена")
+            return
+        
+        # Создаем окно с информацией о норме
+        info_window = tk.Toplevel(self.root)
+        info_window.title(f"Информация о норме №{norm_id}")
+        info_window.geometry("700x600")
+        info_window.transient(self.root)
+        
+        # Основной фрейм
+        main_frame = ttk.Frame(info_window, padding="10")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Информационный текст
+        info_text = tk.Text(main_frame, wrap=tk.WORD, font=("Consolas", 10))
+        info_scrollbar = ttk.Scrollbar(main_frame, command=info_text.yview)
+        info_text.config(yscrollcommand=info_scrollbar.set)
+        
+        # Формируем содержимое
+        content = f"ИНФОРМАЦИЯ О НОРМЕ №{norm_id}\n" + "=" * 50 + "\n\n"
+        content += f"Описание: {norm_info['description']}\n"
+        content += f"Тип нормы: {norm_info['norm_type']}\n"
+        content += f"Количество точек: {norm_info['points_count']}\n"
+        content += f"Диапазон нагрузки: {norm_info['load_range']}\n"
+        content += f"Диапазон расхода: {norm_info['consumption_range']}\n\n"
+        
+        if norm_info['points']:
+            content += "ТОЧКИ НОРМЫ:\n" + "-" * 30 + "\n"
+            content += f"{'№':<3} {'Нагрузка, т/ось':<15} {'Расход, кВт·ч/10⁴ ткм':<20}\n"
+            content += "-" * 50 + "\n"
+            
+            for i, (load, consumption) in enumerate(norm_info['points'], 1):
+                content += f"{i:<3} {load:<15.2f} {consumption:<20.1f}\n"
+            
+            content += "\n"
+        
+        # Базовые данные нормы
+        if norm_info['base_data']:
+            content += "ДОПОЛНИТЕЛЬНЫЕ ДАННЫЕ:\n" + "-" * 30 + "\n"
+            for key, value in norm_info['base_data'].items():
+                if value is not None and value != '':
+                    content += f"{key}: {value}\n"
+        
+        # Статистика использования нормы
+        routes_count = self.analyzer.get_norm_routes_count(norm_id)
+        content += f"\nИСПОЛЬЗОВАНИЕ НОРМЫ:\n" + "-" * 30 + "\n"
+        content += f"Количество маршрутов с этой нормой: {routes_count}\n"
+        
+        info_text.insert(1.0, content)
+        info_text.config(state='disabled')
+        
+        # Размещение элементов
+        info_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        info_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Кнопка закрытия
+        ttk.Button(info_window, text="Закрыть", 
+                  command=info_window.destroy).pack(pady=10)
     
     def analyze_section(self):
         """Анализирует выбранный участок"""
         section = self.section_var.get()
         if not section:
+            messagebox.showwarning("Предупреждение", "Выберите участок для анализа")
             return
         
-        logger.info(f"Начинаем анализ участка: {section}")
+        # Определяем норму для анализа
+        norm_id = self.norm_var.get()
+        if norm_id == "Все нормы":
+            norm_id = None
+        
+        logger.info(f"Начинаем анализ участка: {section}, норма: {norm_id}")
         
         # Запускаем анализ в отдельном потоке
-        threading.Thread(target=self._analyze_section_thread, args=(section,), daemon=True).start()
+        threading.Thread(target=self._analyze_section_thread, args=(section, norm_id), daemon=True).start()
     
-    def _analyze_section_thread(self, section_name: str):
+    def _analyze_section_thread(self, section_name: str, norm_id: Optional[str]):
         """Поток анализа участка"""
         try:
             fig, statistics, error = self.analyzer.analyze_section(
                 section_name,
+                norm_id=norm_id,
                 locomotive_filter=self.locomotive_filter,
                 coefficients_manager=self.coefficients_manager,
                 use_coefficients=self.use_coefficients
             )
             
-            self.root.after(0, self._update_analysis_results, fig, statistics, error)
+            self.root.after(0, self._update_analysis_results, fig, statistics, error, section_name, norm_id)
             
         except Exception as e:
             logger.error(f"Ошибка анализа участка {section_name}: {e}")
-            self.root.after(0, self._update_analysis_results, None, None, str(e))
+            self.root.after(0, self._update_analysis_results, None, None, str(e), section_name, norm_id)
     
-    def _update_analysis_results(self, fig, statistics, error):
+    def _update_analysis_results(self, fig, statistics, error, section_name: str, norm_id: Optional[str]):
         """Обновляет результаты анализа"""
         if error:
             messagebox.showerror("Ошибка", error)
@@ -495,9 +614,10 @@ class NormsAnalyzerGUI:
         self.update_statistics(statistics)
         
         # Обновляем информацию о графике
-        self.update_plot_info(self.section_var.get(), statistics)
+        self.update_plot_info(section_name, statistics, norm_id)
         
-        logger.info(f"Анализ участка {self.section_var.get()} завершен")
+        norm_text = f" с нормой {norm_id}" if norm_id else ""
+        logger.info(f"Анализ участка {section_name}{norm_text} завершен")
     
     def open_locomotive_filter(self):
         """Открывает диалог фильтра локомотивов"""
@@ -541,13 +661,14 @@ class NormsAnalyzerGUI:
         text += f"Экономия: {stats['economy']} ({stats['economy']/stats['processed']*100 if stats['processed'] > 0 else 0:.1f}%)\n"
         text += f"В норме: {stats['normal']} ({stats['normal']/stats['processed']*100 if stats['processed'] > 0 else 0:.1f}%)\n"
         text += f"Перерасход: {stats['overrun']} ({stats['overrun']/stats['processed']*100 if stats['processed'] > 0 else 0:.1f}%)\n"
-        text += f"Среднее отклонение: {stats['mean_deviation']:.1f}%\n\n"
+        text += f"Среднее отклонение: {stats['mean_deviation']:.1f}%\n"
+        text += f"Медианное отклонение: {stats['median_deviation']:.1f}%\n\n"
         
         text += "Детально:\n"
         detailed = stats['detailed_stats']
         categories = {
             'economy_strong': 'Экономия сильная (>30%)',
-            'economy_medium': 'Экономия средняя (20-30%)',
+            'economy_medium': 'Экономия средняя (20-30%)', 
             'economy_weak': 'Экономия слабая (5-20%)',
             'normal': 'Норма (±5%)',
             'overrun_weak': 'Перерасход слабый (5-20%)',
@@ -559,16 +680,17 @@ class NormsAnalyzerGUI:
             count = detailed.get(key, 0)
             percent = count / stats['processed'] * 100 if stats['processed'] > 0 else 0
             if count > 0:
-                text += f"{name}: {percent:.1f}%\n"
+                text += f"{name}: {count} ({percent:.1f}%)\n"
         
         self.stats_text.insert(1.0, text)
     
-    def update_plot_info(self, section_name: str, stats: Dict):
+    def update_plot_info(self, section_name: str, stats: Dict, norm_id: Optional[str] = None):
         """Обновляет информацию о графике"""
         self.plot_info.delete(1.0, tk.END)
         
+        norm_text = f" (норма {norm_id})" if norm_id else ""
         text = "ИНТЕРАКТИВНЫЙ ГРАФИК\n" + "=" * 40 + "\n\n"
-        text += f"Участок: {section_name}\n\n"
+        text += f"Участок: {section_name}{norm_text}\n\n"
         text += "Возможности графика:\n"
         text += "• Наведите курсор на точку для просмотра подробной информации\n"
         text += "• Используйте колесо мыши для масштабирования\n"
@@ -578,12 +700,26 @@ class NormsAnalyzerGUI:
         text += "Верхний график:\n"
         text += "• Линии - кривые норм\n"
         text += "• Квадраты - опорные точки норм\n"
-        text += "• Круги - фактические значения маршрутов\n\n"
+        text += "• Цветные круги - фактические значения маршрутов\n"
+        text += "  - Зеленые оттенки: экономия\n"
+        text += "  - Золотой: норма (±5%)\n"
+        text += "  - Оранжево-красные: перерасход\n\n"
         text += "Нижний график:\n"
         text += "• Точки сгруппированы по отклонениям от нормы\n"
-        text += "• Зеленая зона - допустимые отклонения (±5%)\n"
-        text += "• Оранжевые линии - границы значительных отклонений (±20%)\n\n"
-        text += "Для просмотра в полноэкранном режиме\nнажмите 'Открыть график в браузере'"
+        text += "• Золотая зона - допустимые отклонения (±5%)\n"
+        text += "• Оранжевые линии - границы значительных отклонений (±20%)\n"
+        text += "• Красные линии - границы критических отклонений (±30%)\n\n"
+        
+        # Информация о данных
+        section_routes_count = self.analyzer.get_section_routes_count(section_name)
+        text += f"СТАТИСТИКА УЧАСТКА:\n" + "-" * 30 + "\n"
+        text += f"Всего маршрутов участка: {section_routes_count}\n"
+        text += f"Обработано в анализе: {stats['processed']}\n"
+        if norm_id:
+            norm_routes_count = self.analyzer.get_norm_routes_count(norm_id)
+            text += f"Маршрутов с нормой {norm_id}: {norm_routes_count}\n"
+        
+        text += "\nДля просмотра в полноэкранном режиме\nнажмите 'Открыть график в браузере'"
         
         self.plot_info.insert(1.0, text)
     
@@ -591,25 +727,32 @@ class NormsAnalyzerGUI:
         """Обновляет информацию о графике (по умолчанию)"""
         self.plot_info.delete(1.0, tk.END)
         
-        text = "АНАЛИЗАТОР НОРМ РАСХОДА ЭЛЕКТРОЭНЕРГИИ\n" + "=" * 45 + "\n\n"
+        text = "АНАЛИЗАТОР НОРМ С ИНТЕГРАЦИЕЙ ROUTE_PROCESSOR.PY\n" + "=" * 55 + "\n\n"
         text += "Для начала работы:\n\n"
         text += "1. Выберите HTML файлы маршрутов\n"
         text += "   • Можно выбрать несколько файлов\n"
         text += "   • Файлы будут автоматически очищены от лишнего кода\n"
-        text += "   • Дубликаты маршрутов будут отфильтрованы\n\n"
+        text += "   • Дубликаты маршрутов будут отфильтрованы\n"
+        text += "   • Участки будут объединены как в route_processor.py\n\n"
         text += "2. Выберите HTML файлы норм (опционально)\n"
         text += "   • Нормы будут добавлены в высокопроизводительное хранилище\n"
         text += "   • Существующие нормы будут обновлены при необходимости\n\n"
         text += "3. Загрузите выбранные файлы\n\n"
-        text += "4. Выберите участок для анализа\n\n"
+        text += "4. Выберите участок для анализа\n"
+        text += "   • После выбора участка появится список доступных норм\n"
+        text += "   • Можно анализировать все нормы сразу или конкретную\n\n"
         text += "5. Настройте фильтры локомотивов (опционально)\n\n"
         text += "6. Анализируйте результаты на интерактивном графике\n\n"
-        text += "Особенности HTML версии:\n"
+        text += "НОВЫЕ ВОЗМОЖНОСТИ:\n" + "-" * 30 + "\n"
+        text += "• Полная интеграция с route_processor.py\n"
+        text += "• Объединение одинаковых участков в маршрутах\n"
+        text += "• Выбор конкретной нормы для анализа\n"
+        text += "• Просмотр подробной информации о нормах\n"
+        text += "• Корректный экспорт в Excel с красным форматированием\n"
+        text += "• Расширенная статистика по всем категориям отклонений\n"
         text += "• Автоматическая очистка HTML файлов\n"
-        text += "• Извлечение номеров норм из участков\n"
         text += "• Фильтрация по идентификаторам маршрутов\n"
-        text += "• Высокопроизводительное хранилище норм\n"
-        text += "• Подробное логирование операций"
+        text += "• Высокопроизводительное хранилище норм"
         
         self.plot_info.insert(1.0, text)
     
@@ -622,8 +765,9 @@ class NormsAnalyzerGUI:
             messagebox.showwarning("Предупреждение", "График не найден. Выполните анализ участка.")
     
     def export_to_excel(self):
-        """Экспортирует данные в Excel"""
-        if not hasattr(self.analyzer, 'routes_df') or self.analyzer.routes_df is None:
+        """Экспортирует данные в Excel с полным форматированием как в route_processor.py"""
+        routes_data = self.analyzer.get_routes_data()
+        if routes_data.empty:
             messagebox.showwarning("Предупреждение", "Нет данных для экспорта")
             return
         
@@ -637,7 +781,12 @@ class NormsAnalyzerGUI:
                 success = self.analyzer.export_routes_to_excel(filename)
                 if success:
                     logger.info(f"Данные экспортированы в {os.path.basename(filename)}")
-                    messagebox.showinfo("Успех", "Данные успешно экспортированы")
+                    messagebox.showinfo("Успех", 
+                                      f"Данные успешно экспортированы в Excel!\n\n"
+                                      f"Файл: {os.path.basename(filename)}\n"
+                                      f"Записей: {len(routes_data)}\n"
+                                      f"Включает: объединенные участки, красное форматирование,\n"
+                                      f"все расчеты как в route_processor.py")
                 else:
                     messagebox.showerror("Ошибка", "Не удалось экспортировать данные")
             except Exception as e:
@@ -804,6 +953,106 @@ class NormsAnalyzerGUI:
         except Exception as e:
             logger.error(f"Ошибка валидации норм: {e}")
             messagebox.showerror("Ошибка", f"Ошибка валидации: {str(e)}")
+    
+    def show_routes_statistics(self):
+        """Показывает подробную статистику маршрутов"""
+        routes_data = self.analyzer.get_routes_data()
+        if routes_data.empty:
+            messagebox.showwarning("Предупреждение", "Нет данных маршрутов")
+            return
+        
+        # Создаем окно со статистикой
+        stats_window = tk.Toplevel(self.root)
+        stats_window.title("Статистика обработанных маршрутов")
+        stats_window.geometry("800x600")
+        stats_window.transient(self.root)
+        
+        # Основной фрейм
+        main_frame = ttk.Frame(stats_window, padding="10")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Текстовое поле со статистикой
+        stats_text = tk.Text(main_frame, wrap=tk.WORD, font=("Consolas", 10))
+        stats_scrollbar = ttk.Scrollbar(main_frame, command=stats_text.yview)
+        stats_text.configure(yscrollcommand=stats_scrollbar.set)
+        
+        # Собираем статистику
+        processing_stats = self.analyzer.route_processor.get_processing_stats()
+        
+        content = "ПОДРОБНАЯ СТАТИСТИКА МАРШРУТОВ\n" + "=" * 60 + "\n\n"
+        
+        # Общая статистика обработки
+        content += "ОБРАБОТКА ФАЙЛОВ:\n" + "-" * 30 + "\n"
+        content += f"Файлов обработано: {processing_stats['total_files']}\n"
+        content += f"Маршрутов найдено: {processing_stats['total_routes_found']}\n"
+        content += f"Уникальных маршрутов: {processing_stats['unique_routes']}\n"
+        content += f"Дубликатов удалено: {processing_stats['duplicates_total']}\n"
+        content += f"Маршрутов с равными расходами: {processing_stats['routes_with_equal_rashod']}\n"
+        content += f"Обработано успешно: {processing_stats['routes_processed']}\n"
+        content += f"Пропущено: {processing_stats['routes_skipped']}\n"
+        content += f"Итоговых записей: {processing_stats['output_rows']}\n\n"
+        
+        # Статистика по участкам
+        sections_stats = routes_data.groupby('Наименование участка').size().sort_values(ascending=False)
+        content += "СТАТИСТИКА ПО УЧАСТКАМ:\n" + "-" * 30 + "\n"
+        content += f"Всего участков: {len(sections_stats)}\n"
+        content += "Топ-10 участков по количеству маршрутов:\n"
+        for section, count in sections_stats.head(10).items():
+            content += f"  {section}: {count} маршрутов\n"
+        content += "\n"
+        
+        # Статистика по нормам
+        norms_stats = routes_data['Номер нормы'].value_counts().head(10)
+        content += "СТАТИСТИКА ПО НОРМАМ:\n" + "-" * 30 + "\n"
+        content += f"Всего уникальных норм: {routes_data['Номер нормы'].nunique()}\n"
+        content += "Топ-10 норм по использованию:\n"
+        for norm, count in norms_stats.items():
+            content += f"  Норма {norm}: {count} использований\n"
+        content += "\n"
+        
+        # Статистика по локомотивам
+        loco_stats = routes_data.groupby(['Серия локомотива', 'Номер локомотива']).size().sort_values(ascending=False)
+        content += "СТАТИСТИКА ПО ЛОКОМОТИВАМ:\n" + "-" * 30 + "\n"
+        content += f"Всего уникальных локомотивов: {len(loco_stats)}\n"
+        content += "Топ-10 локомотивов по количеству маршрутов:\n"
+        for (series, number), count in loco_stats.head(10).items():
+            content += f"  {series} №{number}: {count} маршрутов\n"
+        content += "\n"
+        
+        # Статистика по датам
+        if 'Дата маршрута' in routes_data.columns:
+            try:
+                dates_stats = pd.to_datetime(routes_data['Дата маршрута'], format='%d.%m.%Y', errors='coerce').dt.date.value_counts().sort_index()
+                content += "СТАТИСТИКА ПО ДАТАМ:\n" + "-" * 30 + "\n"
+                content += f"Диапазон дат: {dates_stats.index.min()} - {dates_stats.index.max()}\n"
+                content += f"Дней с данными: {len(dates_stats)}\n"
+                content += f"Среднее маршрутов в день: {dates_stats.mean():.1f}\n"
+                content += f"Максимум маршрутов в день: {dates_stats.max()}\n\n"
+            except:
+                pass
+        
+        # Статистика по красным строкам (как в route_processor.py)
+        if 'USE_RED_COLOR' in routes_data.columns:
+            red_color_count = routes_data['USE_RED_COLOR'].sum()
+            content += "СТАТИСТИКА КРАСНОГО ФОРМАТИРОВАНИЯ:\n" + "-" * 30 + "\n"
+            content += f"Строк с красным НЕТТО/БРУТТО/ОСИ: {red_color_count}\n"
+            content += f"Процент от общего: {red_color_count/len(routes_data)*100:.1f}%\n"
+        
+        if 'USE_RED_RASHOD' in routes_data.columns:
+            red_rashod_count = routes_data['USE_RED_RASHOD'].sum()
+            content += f"Строк с красными расходами: {red_rashod_count}\n"
+            content += f"Процент от общего: {red_rashod_count/len(routes_data)*100:.1f}%\n"
+        
+        stats_text.insert(1.0, content)
+        stats_text.config(state='disabled')
+        
+        # Размещение элементов
+        stats_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        stats_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Кнопка закрытия
+        ttk.Button(stats_window, text="Закрыть", 
+                  command=stats_window.destroy).pack(pady=10)
     
     def on_closing(self):
         """Обработчик закрытия окна"""
