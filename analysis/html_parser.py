@@ -10,11 +10,10 @@ import logging
 from datetime import datetime
 
 # Настройка логирования
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 class HTMLRouteParser:
-    """Парсер HTML файлов с маршрутами"""
+    """Парсер HTML файлов с маршрутами из системы ИОММ"""
     
     def __init__(self):
         self.routes_data = []
@@ -40,109 +39,111 @@ class HTMLRouteParser:
             logger.warning("Не найдено ни одного маршрута")
             return pd.DataFrame()
             
-        # Фильтрация маршрутов по логике
-        filtered_routes = self._filter_routes(all_routes)
-        logger.info(f"После фильтрации осталось {len(filtered_routes)} маршрутов")
-        
         # Преобразование в DataFrame
-        df = pd.DataFrame(filtered_routes)
+        df = pd.DataFrame(all_routes)
         logger.info(f"Создан DataFrame с колонками: {list(df.columns)}")
         
         return df
     
     def _parse_single_html_file(self, file_path: str) -> List[Dict]:
         """Парсинг одного HTML файла"""
-        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-            content = f.read()
-        
-        # Альтернативная кодировка если UTF-8 не работает
-        try:
-            with open(file_path, 'r', encoding='windows-1251') as f:
-                content = f.read()
-        except:
-            pass
+        # Пробуем разные кодировки
+        content = None
+        for encoding in ['utf-8', 'windows-1251', 'cp1252']:
+            try:
+                with open(file_path, 'r', encoding=encoding, errors='ignore') as f:
+                    content = f.read()
+                    logger.debug(f"Файл прочитан с кодировкой {encoding}")
+                    break
+            except Exception as e:
+                logger.debug(f"Не удалось прочитать файл с кодировкой {encoding}: {e}")
+                continue
+                
+        if not content:
+            logger.error(f"Не удалось прочитать файл {file_path}")
+            return []
             
         soup = BeautifulSoup(content, 'html.parser')
         routes = []
         
-        # Поиск блоков с информацией о маршрутах
-        route_blocks = self._find_route_blocks(soup)
-        logger.debug(f"Найдено {len(route_blocks)} блоков маршрутов")
+        # Поиск заголовков маршрутов
+        route_headers = self._find_route_headers(soup)
+        logger.debug(f"Найдено {len(route_headers)} заголовков маршрутов")
         
-        for block in route_blocks:
+        for header in route_headers:
             try:
-                route_data = self._parse_route_block(block)
+                route_data = self._parse_route_from_header(header, soup)
                 if route_data:
-                    routes.append(route_data)
-                    logger.debug(f"Обработан маршрут №{route_data.get('Номер маршрута', 'N/A')}")
+                    routes.extend(route_data)  # route_data теперь список записей
+                    logger.debug(f"Обработан маршрут №{route_data[0].get('Номер маршрута', 'N/A') if route_data else 'N/A'}")
             except Exception as e:
-                logger.error(f"Ошибка при парсинге блока маршрута: {e}")
+                logger.error(f"Ошибка при парсинге маршрута: {e}")
+                continue
                 
         return routes
     
-    def _find_route_blocks(self, soup: BeautifulSoup) -> List:
-        """Поиск блоков с маршрутами в HTML"""
-        route_blocks = []
+    def _find_route_headers(self, soup: BeautifulSoup) -> List:
+        """Поиск заголовков с маршрутами"""
+        headers = []
         
-        # Ищем заголовки с информацией о маршруте
-        filter_headers = soup.find_all('th', class_='thl_common')
+        # Ищем все элементы th с классом thl_common
+        route_headers = soup.find_all('th', class_='thl_common')
         
-        for header in filter_headers:
-            # Проверяем, содержит ли заголовок информацию о маршруте
+        for header in route_headers:
             header_text = header.get_text()
             if 'Маршрут №' in header_text and 'Идентификатор' in header_text:
-                # Находим следующие таблицы с данными
-                route_block = self._extract_route_data_from_header(header)
-                if route_block:
-                    route_blocks.append(route_block)
-                    
-        return route_blocks
+                headers.append(header)
+                logger.debug(f"Найден заголовок маршрута: {header_text[:100]}...")
+                
+        return headers
     
-    def _extract_route_data_from_header(self, header) -> Optional[Dict]:
-        """Извлечение данных маршрута из заголовка и следующих таблиц"""
+    def _parse_route_from_header(self, header, soup: BeautifulSoup) -> List[Dict]:
+        """Извлечение данных маршрута из заголовка"""
         try:
             header_text = header.get_text()
             
             # Извлекаем базовую информацию из заголовка
             route_info = self._parse_header_info(header_text)
             if not route_info:
-                return None
+                return []
                 
             logger.debug(f"Найден маршрут: {route_info}")
             
-            # Ищем таблицы с данными после заголовка
-            current_element = header.find_parent('table')
-            if not current_element:
-                return None
-                
-            # Ищем следующие таблицы с данными о расходах
-            tables_data = self._find_route_tables(current_element)
+            # Ищем таблицу с данными после заголовка
+            data_table = self._find_data_table_after_header(header)
             
-            if tables_data:
-                route_info.update(tables_data)
-                return route_info
+            if not data_table:
+                logger.warning(f"Не найдена таблица данных для маршрута {route_info['Номер маршрута']}")
+                return []
+            
+            # Парсим строки данных из таблицы
+            route_records = self._parse_data_table(data_table, route_info)
+            
+            return route_records
                 
         except Exception as e:
             logger.error(f"Ошибка при извлечении данных маршрута: {e}")
-            
-        return None
+            return []
     
     def _parse_header_info(self, header_text: str) -> Optional[Dict]:
         """Парсинг информации из заголовка маршрута"""
         try:
+            # Очищаем текст от лишних пробелов и символов
+            clean_text = re.sub(r'\s+', ' ', header_text.strip())
+            
             # Регулярные выражения для извлечения данных
-            route_pattern = r'Маршрут №:\s*(\d+)'
+            route_pattern = r'Маршрут\s*№:\s*(\d+)'
             date_pattern = r'Дата:\s*([\d.]+)'
-            depot_pattern = r'Депо:\s*(\d+\s+[^И]*)'
+            depot_pattern = r'Депо:\s*([^И]+?)(?=Идентификатор|$)'
             id_pattern = r'Идентификатор:\s*(\d+)'
             
-            route_match = re.search(route_pattern, header_text)
-            date_match = re.search(date_pattern, header_text)
-            depot_match = re.search(depot_pattern, header_text)
-            id_match = re.search(id_pattern, header_text)
+            route_match = re.search(route_pattern, clean_text)
+            date_match = re.search(date_pattern, clean_text)
+            depot_match = re.search(depot_pattern, clean_text)
+            id_match = re.search(id_pattern, clean_text)
             
             if not all([route_match, date_match, id_match]):
-                logger.warning(f"Не все обязательные поля найдены в заголовке: {header_text}")
+                logger.warning(f"Не все обязательные поля найдены в заголовке: {clean_text}")
                 return None
                 
             return {
@@ -155,93 +156,169 @@ class HTMLRouteParser:
             logger.error(f"Ошибка парсинга заголовка: {e}")
             return None
     
-    def _find_route_tables(self, start_element) -> Optional[Dict]:
-        """Поиск таблиц с данными маршрута"""
+    def _find_data_table_after_header(self, header) -> Optional:
+        """Поиск таблицы с данными после заголовка"""
         try:
-            # Ищем таблицы с данными о расходах
-            next_sibling = start_element.find_next_sibling()
-            tables_found = 0
+            # Начинаем с родительской таблицы заголовка
+            current_element = header.find_parent('table')
+            if not current_element:
+                return None
             
-            while next_sibling and tables_found < 10:  # Ограничиваем поиск
-                if next_sibling.name == 'table':
+            # Ищем следующие элементы после таблицы заголовка
+            next_element = current_element.find_next_sibling()
+            search_count = 0
+            
+            while next_element and search_count < 10:
+                if next_element.name == 'table':
                     # Проверяем, является ли это таблицей с данными о расходах
-                    table_data = self._parse_consumption_table(next_sibling)
-                    if table_data:
-                        return table_data
-                    tables_found += 1
-                    
-                next_sibling = next_sibling.find_next_sibling()
+                    if self._is_data_table(next_element):
+                        logger.debug("Найдена таблица с данными")
+                        return next_element
+                
+                next_element = next_element.find_next_sibling()
+                search_count += 1
+                
+            logger.warning("Таблица с данными не найдена")
+            return None
                 
         except Exception as e:
-            logger.error(f"Ошибка при поиске таблиц: {e}")
-            
-        return None
+            logger.error(f"Ошибка при поиске таблицы данных: {e}")
+            return None
     
-    def _parse_consumption_table(self, table) -> Optional[Dict]:
+    def _is_data_table(self, table) -> bool:
+        """Проверяет, является ли таблица таблицей с данными о расходах"""
+        try:
+            # Ищем заголовки, характерные для таблицы данных
+            headers = table.find_all('th')
+            header_texts = [th.get_text().strip() for th in headers]
+            
+            # Ключевые слова, которые должны быть в заголовках таблицы данных
+            keywords = ['участок', 'станция', 'расход', 'норма', 'брутто']
+            
+            header_text_combined = ' '.join(header_texts).lower()
+            
+            # Проверяем наличие ключевых слов
+            keyword_count = sum(1 for keyword in keywords if keyword in header_text_combined)
+            
+            if keyword_count >= 3:  # Минимум 3 ключевых слова
+                logger.debug(f"Найдена таблица данных с заголовками: {header_texts[:3]}...")
+                return True
+                
+            return False
+            
+        except Exception as e:
+            logger.error(f"Ошибка при проверке таблицы: {e}")
+            return False
+    
+    def _parse_data_table(self, table, route_info: Dict) -> List[Dict]:
         """Парсинг таблицы с данными о расходах"""
         try:
-            # Ищем строки с данными об участках
             rows = table.find_all('tr')
+            data_records = []
             
-            sections_data = []
-            
+            # Пропускаем заголовочные строки
+            data_rows = []
             for row in rows:
-                cells = row.find_all('td')
-                if len(cells) >= 8:  # Минимальное количество ячеек для строки с данными
-                    section_data = self._parse_section_row(cells)
-                    if section_data:
-                        sections_data.append(section_data)
-                        
-            if sections_data:
-                logger.debug(f"Найдено {len(sections_data)} участков в таблице")
-                return {'sections': sections_data}
-                
-        except Exception as e:
-            logger.error(f"Ошибка парсинга таблицы расходов: {e}")
+                cells = row.find_all(['td', 'th'])
+                if len(cells) >= 5:  # Минимум 5 колонок для строки с данными
+                    # Проверяем, что это не заголовок
+                    first_cell_text = cells[0].get_text().strip()
+                    if (not first_cell_text.lower() in ['нормируемый', 'участок', '1', 'итого'] and 
+                        first_cell_text and 
+                        not first_cell_text.isdigit() and
+                        'итого' not in first_cell_text.lower()):
+                        data_rows.append(cells)
             
-        return None
+            logger.debug(f"Найдено {len(data_rows)} строк данных")
+            
+            for cells in data_rows:
+                try:
+                    record = self._parse_data_row(cells, route_info)
+                    if record:
+                        data_records.append(record)
+                except Exception as e:
+                    logger.error(f"Ошибка при парсинге строки данных: {e}")
+                    continue
+            
+            logger.debug(f"Создано {len(data_records)} записей данных")
+            return data_records
+            
+        except Exception as e:
+            logger.error(f"Ошибка парсинга таблицы данных: {e}")
+            return []
     
-    def _parse_section_row(self, cells) -> Optional[Dict]:
+    def _parse_data_row(self, cells, route_info: Dict) -> Optional[Dict]:
         """Парсинг строки с данными участка"""
         try:
-            # Проверяем, что это строка с данными участка
-            section_name_cell = cells[0]
-            section_name = section_name_cell.get_text().strip()
-            
-            # Игнорируем итоговые строки и заголовки
-            if not section_name or 'Итого' in section_name or section_name.isdigit():
+            if len(cells) < 5:
                 return None
                 
-            # Извлекаем данные из ячеек
+            # Извлекаем название участка
+            section_name = cells[0].get_text().strip()
+            
+            # Пропускаем итоговые строки и некорректные названия
+            if (not section_name or 
+                'итого' in section_name.lower() or 
+                section_name.isdigit() or
+                len(section_name) < 3):
+                return None
+            
+            # Извлекаем числовые данные
             tkm_brutto = self._extract_number(cells[1].get_text()) if len(cells) > 1 else 0
             km = self._extract_number(cells[2].get_text()) if len(cells) > 2 else 0
-            actual_consumption = self._extract_number(cells[4].get_text()) if len(cells) > 4 else 0
-            norm_consumption = self._extract_number(cells[5].get_text()) if len(cells) > 5 else 0
             
-            # Извлекаем номер нормы из гиперссылки
+            # Индекс может варьироваться, ищем колонки с расходами
+            actual_consumption = 0
+            norm_consumption = 0
             norm_number = None
-            if len(cells) > 6:
-                norm_link = cells[6].find('a')
-                if norm_link and norm_link.get('href'):
-                    norm_number = self._extract_norm_number(norm_link.get('href'))
-                    
+            
+            # Ищем колонки с фактическим и нормативным расходом
+            for i, cell in enumerate(cells):
+                cell_text = cell.get_text().strip()
+                
+                # Фактический расход (обычно в 4-5 колонке)
+                if i in [3, 4] and self._is_number(cell_text):
+                    actual_consumption = self._extract_number(cell_text)
+                
+                # Нормативный расход (обычно в 5-6 колонке)  
+                if i in [4, 5] and self._is_number(cell_text):
+                    if actual_consumption == 0:  # Если еще не нашли фактический
+                        actual_consumption = self._extract_number(cell_text)
+                    else:  # Если уже нашли фактический, это нормативный
+                        norm_consumption = self._extract_number(cell_text)
+                
+                # Ищем ссылки с номером нормы
+                links = cell.find_all('a')
+                for link in links:
+                    href = link.get('href', '')
+                    if 'id_ntp_tax' in href:
+                        norm_number = self._extract_norm_number(href)
+            
             # Проверяем валидность данных
-            if actual_consumption == 0 and norm_consumption == 0:
+            if actual_consumption == 0:
+                logger.debug(f"Пропускаем участок {section_name}: нет данных о расходе")
                 return None
-                
-            # Игнорируем маршруты где расход по норме равен фактическому
-            if actual_consumption != 0 and abs(actual_consumption - norm_consumption) < 0.1:
-                logger.debug(f"Игнорируем участок {section_name}: фактический расход равен нормативному")
-                return None
-                
-            return {
+            
+            # Вычисляем нагрузку на ось (примерная формула)
+            if km > 0 and tkm_brutto > 0:
+                load_per_axle = tkm_brutto / km / 1000 * 20  # Примерная формула
+            else:
+                load_per_axle = 20.0  # Значение по умолчанию
+            
+            record = {
+                'Номер маршрута': route_info['Номер маршрута'],
+                'Дата маршрута': route_info['Дата маршрута'],
+                'Депо': route_info['Депо'],
+                'Идентификатор': route_info['Идентификатор'],
                 'Наименование участка': section_name,
-                'Ткм брутто': tkm_brutto,
-                'Км': km,
+                'БРУТТО': tkm_brutto / 1000 if tkm_brutto else 0,  # В тысячах
                 'Фактический удельный': actual_consumption,
-                'Расход по норме': norm_consumption,
-                'Номер нормы': norm_number
+                'Номер нормы': norm_number,
+                'Нажатие на ось': max(15.0, min(25.0, load_per_axle))  # Ограничиваем разумными пределами
             }
+            
+            logger.debug(f"Создана запись для участка: {section_name}")
+            return record
             
         except Exception as e:
             logger.error(f"Ошибка парсинга строки участка: {e}")
@@ -250,17 +327,38 @@ class HTMLRouteParser:
     def _extract_number(self, text: str) -> float:
         """Извлечение числа из текста"""
         try:
-            # Убираем пробелы и заменяем запятые на точки
-            cleaned_text = re.sub(r'[^\d.,-]', '', text.strip())
+            if not text or pd.isna(text):
+                return 0.0
+                
+            # Очищаем текст
+            cleaned_text = str(text).strip()
+            
+            # Убираем лишние символы, оставляем цифры, точки, запятые и минусы
+            cleaned_text = re.sub(r'[^\d.,-]', '', cleaned_text)
+            
+            # Заменяем запятые на точки
             cleaned_text = cleaned_text.replace(',', '.')
             
+            # Удаляем множественные точки
+            cleaned_text = re.sub(r'\.+', '.', cleaned_text)
+            
             # Ищем число
-            number_match = re.search(r'-?\d+\.?\d*', cleaned_text)
+            number_match = re.search(r'-?\d*\.?\d+', cleaned_text)
             if number_match:
                 return float(number_match.group())
-        except:
+                
+        except (ValueError, TypeError):
             pass
+            
         return 0.0
+    
+    def _is_number(self, text: str) -> bool:
+        """Проверяет, содержит ли текст число"""
+        try:
+            cleaned = re.sub(r'[^\d.,-]', '', str(text).strip())
+            return bool(re.search(r'\d', cleaned))
+        except:
+            return False
     
     def _extract_norm_number(self, href: str) -> Optional[int]:
         """Извлечение номера нормы из гиперссылки"""
@@ -274,67 +372,3 @@ class HTMLRouteParser:
         except Exception as e:
             logger.error(f"Ошибка извлечения номера нормы из {href}: {e}")
         return None
-    
-    def _filter_routes(self, routes: List[Dict]) -> List[Dict]:
-        """Фильтрация маршрутов по логике выбора самых поздних версий"""
-        logger.info("Начало фильтрации маршрутов")
-        
-        # Группируем маршруты по номеру и дате
-        routes_groups = {}
-        
-        for route in routes:
-            if 'sections' not in route:
-                continue
-                
-            key = (route['Номер маршрута'], route['Дата маршрута'])
-            if key not in routes_groups:
-                routes_groups[key] = []
-            routes_groups[key].append(route)
-            
-        logger.info(f"Сгруппировано {len(routes_groups)} уникальных маршрутов (номер+дата)")
-        
-        # Выбираем самую позднюю версию для каждой группы
-        filtered_routes = []
-        
-        for key, group in routes_groups.items():
-            logger.debug(f"Обработка группы {key}: {len(group)} версий")
-            
-            # Сортируем по идентификатору (чем больше, тем позднее)
-            group.sort(key=lambda x: x['Идентификатор'], reverse=True)
-            
-            # Выбираем самую позднюю версию где есть различия в расходах
-            selected_route = None
-            
-            for route in group:
-                # Проверяем, есть ли участки с различающимися расходами
-                valid_sections = []
-                for section in route['sections']:
-                    actual = section.get('Фактический удельный', 0)
-                    norm = section.get('Расход по норме', 0)
-                    if actual != 0 and norm != 0 and abs(actual - norm) > 0.1:
-                        valid_sections.append(section)
-                        
-                if valid_sections:
-                    route['sections'] = valid_sections
-                    selected_route = route
-                    logger.debug(f"Выбран маршрут с идентификатором {route['Идентификатор']}: {len(valid_sections)} участков")
-                    break
-                    
-            if selected_route:
-                # Создаем строки для каждого участка
-                for section in selected_route['sections']:
-                    row = {
-                        'Номер маршрута': selected_route['Номер маршрута'],
-                        'Дата маршрута': selected_route['Дата маршрута'],
-                        'Депо': selected_route['Депо'],
-                        'Идентификатор': selected_route['Идентификатор'],
-                        'Наименование участка': section['Наименование участка'],
-                        'БРУТТО': section['Ткм брутто'] / 1000 if section['Ткм брутто'] else 0,  # Переводим в тысячи
-                        'Фактический удельный': section['Фактический удельный'],
-                        'Номер нормы': section['Номер нормы'],
-                        'Нажатие на ось': section['Ткм брутто'] / max(section['Км'], 1) if section['Км'] else 0  # Примерная формула
-                    }
-                    filtered_routes.append(row)
-                    
-        logger.info(f"Финальная фильтрация: {len(filtered_routes)} записей")
-        return filtered_routes
