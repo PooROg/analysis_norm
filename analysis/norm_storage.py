@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Исправленное хранилище норм с оптимизацией производительности.
-Использует современные возможности Python 3.12 для управления данными норм.
+Исправленное хранилище норм с устранением ошибок импорта.
 """
 
 from __future__ import annotations
@@ -10,11 +9,11 @@ from __future__ import annotations
 import logging
 from typing import Dict, List, Optional, Any, Callable
 from functools import lru_cache
+
+# Правильный порядок импортов
 import pandas as pd
 import numpy as np
 from scipy.interpolate import interp1d, CubicSpline
-
-from .data_models import NormData, NormType, NormPoint
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +108,7 @@ class NormStorage:
             return None
     
     def _create_interpolation_function(self, points: List[tuple[float, float]]) -> NormFunction:
-        """Создает функцию интерполяции из точек нормы."""
+        """Создает функцию интерполяции из точек нормы с исправленными ошибками."""
         # Сортируем точки по X (нагрузке)
         sorted_points = sorted(points, key=lambda p: p[0])
         
@@ -127,31 +126,66 @@ class NormStorage:
             x_vals = list(unique_points.keys())
             y_vals = list(unique_points.values())
         
+        # Проверяем валидность данных
+        if len(x_vals) < 2:
+            raise ValueError("Недостаточно уникальных точек для интерполяции")
+        
         # Выбираем метод интерполяции в зависимости от количества точек
-        if len(x_vals) == 2:
-            # Линейная интерполяция для 2 точек
-            interpolator = interp1d(x_vals, y_vals, kind='linear', 
-                                  bounds_error=False, fill_value='extrapolate')
-        elif len(x_vals) == 3:
-            # Квадратичная интерполяция для 3 точек
-            interpolator = interp1d(x_vals, y_vals, kind='quadratic', 
-                                  bounds_error=False, fill_value='extrapolate')
-        else:
-            # Кубический сплайн для 4+ точек
-            try:
-                interpolator = CubicSpline(x_vals, y_vals, extrapolate=True)
-            except Exception:
-                # Fallback на линейную интерполяцию
+        try:
+            if len(x_vals) == 2:
+                # Линейная интерполяция для 2 точек
                 interpolator = interp1d(x_vals, y_vals, kind='linear', 
                                       bounds_error=False, fill_value='extrapolate')
+            elif len(x_vals) == 3:
+                # Квадратичная интерполяция для 3 точек
+                interpolator = interp1d(x_vals, y_vals, kind='quadratic', 
+                                      bounds_error=False, fill_value='extrapolate')
+            else:
+                # Кубический сплайн для 4+ точек
+                try:
+                    interpolator = CubicSpline(x_vals, y_vals, extrapolate=True)
+                except Exception:
+                    # Fallback на линейную интерполяцию
+                    interpolator = interp1d(x_vals, y_vals, kind='linear', 
+                                          bounds_error=False, fill_value='extrapolate')
+        except Exception as e:
+            logger.error(f"Ошибка создания интерполятора: {e}")
+            # Создаем простую линейную функцию как fallback
+            if len(x_vals) >= 2:
+                slope = (y_vals[-1] - y_vals[0]) / (x_vals[-1] - x_vals[0])
+                intercept = y_vals[0] - slope * x_vals[0]
+                
+                def linear_fallback(x):
+                    return max(0.0, slope * x + intercept)
+                return linear_fallback
+            else:
+                raise ValueError("Невозможно создать функцию интерполяции")
         
         def norm_function(load: float) -> float:
-            """Функция интерполяции нормы."""
+            """Функция интерполяции нормы с улучшенной обработкой ошибок."""
             try:
+                # Проверяем входные данные
+                if not isinstance(load, (int, float)) or pd.isna(load):
+                    return 0.0
+                
                 result = interpolator(load)
-                # Возвращаем положительное значение
-                return max(0.0, float(result))
-            except Exception:
+                
+                # ИСПРАВЛЕНИЕ: Обрабатываем случай, когда результат - массив
+                if hasattr(result, '__len__') and len(result) == 1:
+                    result = result[0]
+                elif hasattr(result, '__len__') and len(result) > 1:
+                    # Если массив, берем первый элемент
+                    result = result[0]
+                
+                # Возвращаем положительное скалярное значение
+                if np.isscalar(result) and not np.isnan(result):
+                    return max(0.0, float(result))
+                else:
+                    # В случае ошибки возвращаем среднее значение Y
+                    return max(0.0, float(np.mean(y_vals)))
+                    
+            except Exception as e:
+                logger.debug(f"Ошибка интерполяции для load={load}: {e}")
                 # В случае ошибки возвращаем среднее значение Y
                 return max(0.0, float(np.mean(y_vals)))
         
@@ -177,7 +211,7 @@ class NormStorage:
                 if not isinstance(x, (int, float)) or not isinstance(y, (int, float)):
                     return False
                 
-                if x <= 0 or y <= 0:  # Проверяем на положительные значения
+                if x <= 0 or y <= 0 or pd.isna(x) or pd.isna(y):  # Проверяем на положительные значения
                     return False
             
             return True
@@ -186,13 +220,22 @@ class NormStorage:
             logger.error(f"Ошибка валидации нормы: {e}")
             return False
     
-    def get_norms_by_type(self, norm_type: NormType) -> Dict[str, NormDict]:
+    def get_norms_by_type(self, norm_type) -> Dict[str, NormDict]:
         """Возвращает нормы определенного типа."""
         result = {}
         
-        for norm_id, norm_data in self._norms.items():
-            if norm_data.get('norm_type') == norm_type.value:
-                result[norm_id] = norm_data
+        try:
+            # Обрабатываем разные форматы norm_type
+            if hasattr(norm_type, 'value'):
+                target_type = norm_type.value
+            else:
+                target_type = str(norm_type)
+            
+            for norm_id, norm_data in self._norms.items():
+                if norm_data.get('norm_type') == target_type:
+                    result[norm_id] = norm_data
+        except Exception as e:
+            logger.error(f"Ошибка фильтрации норм по типу: {e}")
         
         return result
     
@@ -202,33 +245,48 @@ class NormStorage:
     
     def get_storage_info(self) -> Dict[str, Any]:
         """Возвращает информацию о хранилище."""
-        norm_types = {}
-        for norm_data in self._norms.values():
-            norm_type = norm_data.get('norm_type', 'Unknown')
-            norm_types[norm_type] = norm_types.get(norm_type, 0) + 1
-        
-        return {
-            'total_norms': len(self._norms),
-            'norm_types': norm_types,
-            'cached_functions': len(self._norm_functions),
-            'cache_stats': self._cache_stats.copy()
-        }
+        try:
+            norm_types = {}
+            for norm_data in self._norms.values():
+                norm_type = norm_data.get('norm_type', 'Unknown')
+                norm_types[norm_type] = norm_types.get(norm_type, 0) + 1
+            
+            return {
+                'total_norms': len(self._norms),
+                'norm_types': norm_types,
+                'cached_functions': len(self._norm_functions),
+                'cache_stats': self._cache_stats.copy()
+            }
+        except Exception as e:
+            logger.error(f"Ошибка получения информации о хранилище: {e}")
+            return {
+                'total_norms': 0,
+                'norm_types': {},
+                'cached_functions': 0,
+                'cache_stats': {'hits': 0, 'misses': 0}
+            }
     
     def validate_norms(self) -> Dict[str, Any]:
         """Валидирует все нормы в хранилище."""
         validation_results = {
-            'total_norms': len(self._norms),
-            'valid_norms': 0,
-            'invalid_norms': 0,
-            'validation_errors': []
+            'valid': [],
+            'invalid': [],
+            'warnings': []
         }
         
-        for norm_id, norm_data in self._norms.items():
-            if self._validate_norm_data(norm_data):
-                validation_results['valid_norms'] += 1
-            else:
-                validation_results['invalid_norms'] += 1
-                validation_results['validation_errors'].append(norm_id)
+        try:
+            for norm_id, norm_data in self._norms.items():
+                if self._validate_norm_data(norm_data):
+                    validation_results['valid'].append(norm_id)
+                    
+                    # Дополнительные проверки
+                    points = norm_data.get('points', [])
+                    if len(points) > 20:
+                        validation_results['warnings'].append(f"Норма {norm_id}: много точек ({len(points)})")
+                else:
+                    validation_results['invalid'].append(norm_id)
+        except Exception as e:
+            logger.error(f"Ошибка валидации норм: {e}")
         
         return validation_results
     
@@ -237,51 +295,56 @@ class NormStorage:
         if not self._norms:
             return {'total': 0}
         
-        stats = {
-            'total': len(self._norms),
-            'by_type': {},
-            'points_distribution': {},
-            'load_ranges': {},
-            'consumption_ranges': {}
-        }
-        
-        # Статистика по типам
-        for norm_data in self._norms.values():
-            norm_type = norm_data.get('norm_type', 'Unknown')
-            stats['by_type'][norm_type] = stats['by_type'].get(norm_type, 0) + 1
-        
-        # Статистика по количеству точек
-        for norm_data in self._norms.values():
-            points_count = len(norm_data.get('points', []))
-            range_key = self._get_points_range_key(points_count)
-            stats['points_distribution'][range_key] = stats['points_distribution'].get(range_key, 0) + 1
-        
-        # Диапазоны нагрузок и расходов
-        all_loads = []
-        all_consumptions = []
-        
-        for norm_data in self._norms.values():
-            points = norm_data.get('points', [])
-            for point in points:
-                if len(point) == 2:
-                    all_loads.append(point[0])
-                    all_consumptions.append(point[1])
-        
-        if all_loads:
-            stats['load_ranges'] = {
-                'min': min(all_loads),
-                'max': max(all_loads),
-                'mean': np.mean(all_loads)
+        try:
+            stats = {
+                'total': len(self._norms),
+                'by_type': {},
+                'points_distribution': {},
+                'load_ranges': {},
+                'consumption_ranges': {}
             }
-        
-        if all_consumptions:
-            stats['consumption_ranges'] = {
-                'min': min(all_consumptions),
-                'max': max(all_consumptions),
-                'mean': np.mean(all_consumptions)
-            }
-        
-        return stats
+            
+            # Статистика по типам
+            for norm_data in self._norms.values():
+                norm_type = norm_data.get('norm_type', 'Unknown')
+                stats['by_type'][norm_type] = stats['by_type'].get(norm_type, 0) + 1
+            
+            # Статистика по количеству точек
+            for norm_data in self._norms.values():
+                points_count = len(norm_data.get('points', []))
+                range_key = self._get_points_range_key(points_count)
+                stats['points_distribution'][range_key] = stats['points_distribution'].get(range_key, 0) + 1
+            
+            # Диапазоны нагрузок и расходов
+            all_loads = []
+            all_consumptions = []
+            
+            for norm_data in self._norms.values():
+                points = norm_data.get('points', [])
+                for point in points:
+                    if len(point) == 2:
+                        all_loads.append(point[0])
+                        all_consumptions.append(point[1])
+            
+            if all_loads:
+                stats['load_ranges'] = {
+                    'min': min(all_loads),
+                    'max': max(all_loads),
+                    'mean': np.mean(all_loads)
+                }
+            
+            if all_consumptions:
+                stats['consumption_ranges'] = {
+                    'min': min(all_consumptions),
+                    'max': max(all_consumptions),
+                    'mean': np.mean(all_consumptions)
+                }
+            
+            return stats
+            
+        except Exception as e:
+            logger.error(f"Ошибка получения статистики: {e}")
+            return {'total': 0}
     
     def _get_points_range_key(self, points_count: int) -> str:
         """Возвращает ключ диапазона для количества точек."""
@@ -320,20 +383,23 @@ class NormStorage:
         """Экспортирует нормы в DataFrame для анализа."""
         data = []
         
-        for norm_id, norm_data in self._norms.items():
-            points = norm_data.get('points', [])
-            base_data = norm_data.get('base_data', {})
-            
-            for point in points:
-                if len(point) == 2:
-                    record = {
-                        'norm_id': norm_id,
-                        'norm_type': norm_data.get('norm_type', ''),
-                        'load': point[0],
-                        'consumption': point[1],
-                        **base_data
-                    }
-                    data.append(record)
+        try:
+            for norm_id, norm_data in self._norms.items():
+                points = norm_data.get('points', [])
+                base_data = norm_data.get('base_data', {})
+                
+                for point in points:
+                    if len(point) == 2:
+                        record = {
+                            'norm_id': norm_id,
+                            'norm_type': norm_data.get('norm_type', ''),
+                            'load': point[0],
+                            'consumption': point[1],
+                            **base_data
+                        }
+                        data.append(record)
+        except Exception as e:
+            logger.error(f"Ошибка экспорта в DataFrame: {e}")
         
         return pd.DataFrame(data)
     
@@ -341,25 +407,25 @@ class NormStorage:
         """Оптимизирует хранилище, удаляя неиспользуемые данные."""
         initial_cache_size = len(self._norm_functions)
         
-        # Очищаем кэш неиспользуемых функций
-        # (в реальном приложении можно добавить логику отслеживания использования)
-        
         # Удаляем дублированные точки в нормах
         cleaned_count = 0
-        for norm_id, norm_data in self._norms.items():
-            points = norm_data.get('points', [])
-            unique_points = []
-            seen_loads = set()
-            
-            for point in points:
-                if len(point) == 2 and point[0] not in seen_loads:
-                    unique_points.append(point)
-                    seen_loads.add(point[0])
-                elif len(point) == 2:
-                    cleaned_count += 1
-            
-            if len(unique_points) != len(points):
-                norm_data['points'] = unique_points
+        try:
+            for norm_id, norm_data in self._norms.items():
+                points = norm_data.get('points', [])
+                unique_points = []
+                seen_loads = set()
+                
+                for point in points:
+                    if len(point) == 2 and point[0] not in seen_loads:
+                        unique_points.append(point)
+                        seen_loads.add(point[0])
+                    elif len(point) == 2:
+                        cleaned_count += 1
+                
+                if len(unique_points) != len(points):
+                    norm_data['points'] = unique_points
+        except Exception as e:
+            logger.error(f"Ошибка оптимизации: {e}")
         
         return {
             'initial_cache_size': initial_cache_size,
