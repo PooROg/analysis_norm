@@ -1,754 +1,328 @@
-# analysis/html_norm_processor.py
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Оптимизированный процессор HTML файлов норм с использованием современных возможностей Python 3.12.
-Высокопроизводительная обработка норм с кэшированием и векторизацией.
+Исправленный процессор для обработки HTML файлов норм.
+Использует современные возможности Python 3.12 для максимальной производительности.
 """
 
 from __future__ import annotations
-import re
-import tempfile
-from pathlib import Path
-from dataclasses import dataclass, field
-from typing import Optional, Iterator
-from collections import defaultdict
-import pandas as pd
-import numpy as np
+
+import os
 import logging
+import tempfile
+from typing import Dict, List, Optional
+from pathlib import Path
 
-# Импорт оптимизированной альтернативы BeautifulSoup (в будущем можно заменить на selectolax)
-from bs4 import BeautifulSoup
-
-from .data_models import NormDefinition, ValidationResult, ProcessingStats
-from .utils import TextCleaner, URLExtractor, HTMLCleaner, file_reader, temporary_file
+from .data_models import NormData, NormType, ProcessingStats
+from .norm_parser import FastNormParser
 
 logger = logging.getLogger(__name__)
 
+# Типы для Python 3.12
 type HTMLContent = str
-type NormPoints = list[tuple[float, float]]
-type NormDict = dict[str, any]
+type NormDict = Dict[str, Any]
 
-@dataclass(slots=True)
-class NormProcessingConfig:
-    """Конфигурация обработки норм с оптимизацией памяти."""
-    min_work_threshold: float = 0.0
-    max_points_per_norm: int = 50
-    enable_validation: bool = True
-    cache_size: int = 1000
-    batch_size: int = 50
-
-@dataclass(slots=True)
-class NormProcessingResult:
-    """Результат обработки норм."""
-    processed_count: int = 0
-    skipped_count: int = 0
-    error_count: int = 0
-    validation_errors: list[str] = field(default_factory=list)
-
-class OptimizedHTMLNormProcessor:
-    """
-    Оптимизированный процессор HTML файлов норм.
+class HTMLNormProcessor:
+    """Исправленный процессор для обработки HTML файлов норм."""
     
-    Ключевые улучшения:
-    - Кэширование обработанных норм
-    - Векторизованная валидация
-    - Оптимизированный парсинг HTML
-    - Современные структуры данных
-    - Эффективное управление памятью
-    """
+    def __init__(self):
+        self.processed_norms: Dict[str, NormData] = {}
+        self.processing_stats = ProcessingStats()
+        self.norm_parser = FastNormParser()
     
-    def __init__(self, config: Optional[NormProcessingConfig] = None):
-        """Инициализирует процессор с конфигурацией."""
-        self.config = config or NormProcessingConfig()
-        self.norms_cache: dict[str, NormDefinition] = {}
-        self.processing_stats: ProcessingStats = defaultdict(int)
+    def clean_html_file(self, input_file: str) -> Optional[str]:
+        """Очищает HTML файл норм от лишнего кода с улучшенной обработкой ошибок."""
+        logger.info(f"Очистка HTML файла норм: {input_file}")
         
-        # Предкомпилированные регулярные выражения для оптимизации
-        self._compile_patterns()
+        input_path = Path(input_file)
+        if not input_path.exists():
+            logger.error(f"Файл {input_file} не найден!")
+            return None
         
-        logger.info("Optimized HTML norm processor initialized")
+        # Читаем файл с автоопределением кодировки
+        html_content = self._read_file_with_encoding(input_path)
+        if html_content is None:
+            return None
+        
+        # Извлекаем секции таблиц с использованием быстрого парсера
+        sections = self.norm_parser.extract_table_sections(html_content)
+        
+        # Создаем очищенный HTML
+        cleaned_html = self.norm_parser.create_cleaned_html(sections)
+        
+        # Создаем временный файл
+        temp_file = tempfile.mktemp(suffix='.html')
+        temp_path = Path(temp_file)
+        temp_path.write_text(cleaned_html, encoding='utf-8')
+        
+        logger.info(f"HTML файл норм очищен и сохранен во временный файл: {temp_file}")
+        return temp_file
     
-    def _compile_patterns(self) -> None:
-        """Предкомпилирует регулярные выражения."""
-        self.patterns = {
-            'norm_table_1': re.compile(
-                r'(<font class=rcp12><center><b>Удельные нормы электроэнергии и топлива по нагрузке на ось</b></center></font>.*?</table>.*?</table>)',
-                re.DOTALL | re.IGNORECASE
-            ),
-            'norm_table_2': re.compile(
-                r'(<font class=rcp12><center><b>Удельные нормы электроэнергии и топлива по весу поезда</b></center></font>.*?</table>.*?</table>)',
-                re.DOTALL | re.IGNORECASE
-            ),
-            'series_from_sheet': re.compile(r'[А-ЯA-Z]+[\d]+[А-ЯA-Z]*'),
-            'norm_id_link': re.compile(r'id=(\d+)'),
-            'zavod_number': re.compile(r'завод.*?номер', re.IGNORECASE),
-            'percent_value': re.compile(r'процент|%', re.IGNORECASE)
-        }
-    
-    def process_html_files(self, html_files: list[Path]) -> bool:
-        """
-        Обрабатывает список HTML файлов норм с оптимизацией.
+    def _read_file_with_encoding(self, file_path: Path) -> Optional[str]:
+        """Читает файл с автоопределением кодировки."""
+        encodings = ['cp1251', 'utf-8', 'latin-1']
         
-        Args:
-            html_files: Список путей к HTML файлам норм
-            
-        Returns:
-            True если обработка успешна
-        """
-        logger.info(f"Processing {len(html_files)} HTML norm files (optimized)")
-        
-        self.processing_stats.clear()
-        self.processing_stats['total_files'] = len(html_files)
-        
-        total_processed = 0
-        
-        # Обрабатываем файлы батчами
-        for batch in self._batch_files(html_files, self.config.batch_size):
-            batch_result = self._process_norm_file_batch(batch)
-            total_processed += batch_result.processed_count
-            
-            # Обновляем статистику
-            self.processing_stats['total_norms_found'] += batch_result.processed_count
-            self.processing_stats['skipped_norms'] += batch_result.skipped_count
-            self.processing_stats['error_norms'] += batch_result.error_count
-        
-        logger.info(f"Norm processing completed: {total_processed} norms processed")
-        return total_processed > 0
-    
-    def _batch_files(self, files: list[Path], batch_size: int) -> Iterator[list[Path]]:
-        """Разбивает файлы на батчи."""
-        for i in range(0, len(files), batch_size):
-            yield files[i:i + batch_size]
-    
-    def _process_norm_file_batch(self, file_paths: list[Path]) -> NormProcessingResult:
-        """Обрабатывает батч файлов норм."""
-        batch_result = NormProcessingResult()
-        
-        for file_path in file_paths:
+        for encoding in encodings:
             try:
-                file_result = self._process_single_norm_file_optimized(file_path)
-                batch_result.processed_count += file_result.processed_count
-                batch_result.skipped_count += file_result.skipped_count
-                batch_result.error_count += file_result.error_count
-                batch_result.validation_errors.extend(file_result.validation_errors)
+                content = file_path.read_text(encoding=encoding)
+                logger.debug(f"Файл прочитан с кодировкой {encoding}")
+                return content
+            except UnicodeDecodeError:
+                continue
+        
+        logger.error(f"Не удалось прочитать файл {file_path} ни с одной из кодировок")
+        return None
+    
+    def process_html_files(self, html_files: List[str]) -> Dict[str, Dict]:
+        """Обрабатывает список HTML файлов норм с улучшенной производительностью."""
+        logger.info(f"Начинаем обработку {len(html_files)} HTML файлов норм")
+        
+        self.processing_stats.total_files = len(html_files)
+        all_norms: Dict[str, NormData] = {}
+        
+        # Обрабатываем каждый файл
+        for file_path in html_files:
+            logger.info(f"Обработка файла норм: {Path(file_path).name}")
+            
+            try:
+                # Очищаем HTML файл
+                cleaned_file = self.clean_html_file(file_path)
+                if not cleaned_file:
+                    logger.error(f"Не удалось очистить файл {file_path}")
+                    self.processing_stats.processing_errors += 1
+                    continue
                 
-                logger.debug(f"Processed norm file {file_path.name}: {file_result.processed_count} norms")
+                # Обрабатываем очищенный файл
+                file_norms = self._extract_norms_from_cleaned_html(cleaned_file)
+                
+                # Объединяем нормы
+                for norm_id, norm_data in file_norms.items():
+                    if norm_id in all_norms:
+                        logger.warning(f"Норма {norm_id} уже существует, перезаписываем")
+                    all_norms[norm_id] = norm_data
+                
+                # Удаляем временный файл
+                self._safe_remove_file(cleaned_file)
                 
             except Exception as e:
-                logger.error(f"Error processing norm file {file_path}: {e}")
-                batch_result.error_count += 1
+                logger.error(f"Ошибка при обработке файла норм {file_path}: {e}")
+                self.processing_stats.processing_errors += 1
+                continue
         
-        return batch_result
+        self.processing_stats.total_items_found = len(all_norms)
+        logger.info(f"Обработка завершена. Найдено {len(all_norms)} норм")
+        
+        # Сохраняем обработанные нормы
+        self.processed_norms = all_norms
+        
+        # Преобразуем в старый формат для совместимости
+        return {norm_id: norm.to_dict() for norm_id, norm in all_norms.items()}
     
-    def _process_single_norm_file_optimized(self, file_path: Path) -> NormProcessingResult:
-        """Оптимизированная обработка одного HTML файла норм."""
-        result = NormProcessingResult()
+    def _extract_norms_from_cleaned_html(self, cleaned_file: str) -> Dict[str, NormData]:
+        """Извлекает нормы из очищенного HTML файла с использованием быстрого парсера."""
+        logger.debug(f"Извлекаем нормы из файла: {cleaned_file}")
         
-        try:
-            # Очищаем HTML файл
-            with temporary_file(suffix='.html') as temp_file:
-                cleaned_content = self._clean_norm_html_file_optimized(file_path, temp_file)
-                
-                if not cleaned_content:
-                    result.error_count += 1
-                    return result
-                
-                # Извлекаем нормы из очищенного файла
-                norms_data = self._extract_norms_from_cleaned_html_optimized(cleaned_content)
-                
-                # Обрабатываем и кэшируем нормы
-                for norm_id, norm_data in norms_data.items():
-                    if self._validate_and_cache_norm(norm_id, norm_data):
-                        result.processed_count += 1
-                    else:
-                        result.skipped_count += 1
-                        result.validation_errors.append(f"Invalid norm {norm_id}")
+        # Читаем HTML файл
+        html_content = Path(cleaned_file).read_text(encoding='utf-8')
         
-        except Exception as e:
-            logger.error(f"Error in single norm file processing: {e}")
-            result.error_count += 1
+        # Извлекаем секции таблиц
+        sections = self.norm_parser.extract_table_sections(html_content)
         
-        return result
-    
-    def _clean_norm_html_file_optimized(self, input_file: Path, output_file: Path) -> Optional[str]:
-        """Оптимизированная очистка HTML файла норм."""
-        try:
-            with file_reader(input_file) as html_content:
-                logger.debug(f"Reading norm file {input_file.name}, size: {len(html_content):,} bytes")
-                
-                # Ищем таблицы норм с использованием предкомпилированных паттернов
-                norm_tables = []
-                
-                # Таблица по нагрузке на ось
-                match1 = self.patterns['norm_table_1'].search(html_content)
-                if match1:
-                    norm_tables.append(match1.group(1))
-                    logger.debug("Found 'load per axle' norm table")
-                
-                # Таблица по весу поезда
-                match2 = self.patterns['norm_table_2'].search(html_content)
-                if match2:
-                    norm_tables.append(match2.group(1))
-                    logger.debug("Found 'train weight' norm table")
-                
-                if not norm_tables:
-                    logger.warning(f"No norm tables found in {input_file.name}")
-                    return None
-                
-                # Создаем очищенный HTML
-                cleaned_html = self._create_cleaned_norm_html(norm_tables)
-                
-                # Сохраняем во временный файл
-                with open(output_file, 'w', encoding='utf-8') as f:
-                    f.write(cleaned_html)
-                
-                logger.debug(f"Norm HTML file cleaned: {input_file.name}")
-                return cleaned_html
-                
-        except Exception as e:
-            logger.error(f"Error cleaning norm HTML file {input_file}: {e}")
-            return None
-    
-    def _create_cleaned_norm_html(self, norm_tables: list[str]) -> str:
-        """Создает очищенный HTML с таблицами норм."""
-        html_template = '''<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <title>Удельные нормы электроэнергии и топлива</title>
-    <style>
-        body {{ font-family: Arial, sans-serif; margin: 20px; }}
-        .rcp12 {{ font-size: 12px; }}
-        .filter_key {{ font-weight: bold; }}
-        .filter_value {{ color: blue; }}
-        .tr_head {{ background-color: #e0e0e0; }}
-        .thc {{ border: 1px solid #000; padding: 5px; text-align: center; }}
-        .tdc_str1, .tdc_str2 {{ border: 1px solid #000; padding: 3px; text-align: center; }}
-        .tdc_str1 {{ background-color: #f9f9f9; }}
-        .tdc_str2 {{ background-color: #ffffff; }}
-        table {{ border-collapse: collapse; margin: 20px auto; }}
-        .link {{ color: blue; text-decoration: underline; }}
-    </style>
-</head>
-<body>
-{tables}
-</body>
-</html>'''
+        # Обрабатываем каждую секцию
+        all_norms: Dict[str, NormData] = {}
         
-        tables_html = '<br><br>\n'.join(norm_tables)
-        return html_template.format(tables=tables_html)
-    
-    def _extract_norms_from_cleaned_html_optimized(self, html_content: str) -> dict[str, NormDict]:
-        """Оптимизированное извлечение норм из очищенного HTML."""
-        logger.debug("Extracting norms from cleaned HTML (optimized)")
+        for section in sections:
+            try:
+                section_norms = self.norm_parser.parse_section_to_norms(section)
+                all_norms.update(section_norms)
+                logger.debug(f"Секция '{section.title}': найдено {len(section_norms)} норм")
+            except Exception as e:
+                logger.error(f"Ошибка обработки секции '{section.title}': {e}")
+                self.processing_stats.processing_errors += 1
+                continue
         
-        soup = BeautifulSoup(html_content, 'html.parser')
-        all_norms = {}
-        
-        # Обработка таблицы по нагрузке на ось
-        load_section = self._find_section_by_text_optimized(soup, 'нагрузке на ось')
-        if load_section:
-            load_norms = self._extract_norms_from_section_optimized(load_section, 'Нажатие')
-            all_norms.update(load_norms)
-            logger.debug(f"Extracted {len(load_norms)} norms from load section")
-        
-        # Обработка таблицы по весу поезда
-        weight_section = self._find_section_by_text_optimized(soup, 'весу поезда')
-        if weight_section:
-            weight_norms = self._extract_norms_from_section_optimized(weight_section, 'Вес')
-            all_norms.update(weight_norms)
-            logger.debug(f"Extracted {len(weight_norms)} norms from weight section")
-        
-        logger.debug(f"Total norms extracted: {len(all_norms)}")
+        logger.debug(f"Всего извлечено норм: {len(all_norms)}")
         return all_norms
     
-    def _find_section_by_text_optimized(self, soup: BeautifulSoup, search_text: str):
-        """Оптимизированный поиск секции по тексту."""
-        # Используем более эффективный поиск
-        for element in soup.find_all(text=lambda text: text and search_text in text):
-            return element.parent
-        return None
-    
-    def _extract_norms_from_section_optimized(self, section, norm_type: str) -> dict[str, NormDict]:
-        """Оптимизированное извлечение норм из секции."""
-        norms = {}
-        
-        if not section:
-            return norms
-        
-        # Ищем таблицу с данными норм
-        current = section.parent
-        for sibling in current.find_all_next('table'):
-            if sibling.find('tr', class_='tr_head'):
-                headers = self._get_table_headers_optimized(sibling)
-                rows = sibling.find_all('tr')[1:]  # Пропускаем заголовок
-                
-                # Определяем диапазон числовых колонок
-                numeric_start, numeric_end = self._find_numeric_columns_range(headers)
-                
-                # Векторизованная обработка строк
-                batch_norms = self._process_norm_rows_vectorized(
-                    rows, headers, norm_type, numeric_start, numeric_end
-                )
-                
-                norms.update(batch_norms)
-                break
-        
-        return norms
-    
-    def _get_table_headers_optimized(self, table) -> list[str]:
-        """Оптимизированное получение заголовков таблицы."""
-        headers = []
-        header_row = table.find('tr', class_='tr_head')
-        
-        if header_row:
-            # Используем list comprehension для оптимизации
-            headers = [
-                TextCleaner.clean_text(th.get_text()) 
-                for th in header_row.find_all('th')
-            ]
-        
-        return headers
-    
-    def _find_numeric_columns_range(self, headers: list[str]) -> tuple[int, int]:
-        """Находит диапазон числовых колонок с нормами."""
-        numeric_start = 9  # После "Призн. алг. нормир."
-        numeric_end = len(headers) - 2  # До колонок с датами
-        
-        # Оптимизированный поиск начала числовых колонок
-        for i, header in enumerate(headers):
-            if any(keyword in header.lower() for keyword in ['алг', 'нормир']):
-                numeric_start = i + 1
-                break
-        
-        # Оптимизированный поиск конца числовых колонок
-        for i in range(len(headers) - 1, -1, -1):
-            header = headers[i]
-            if any(keyword in header.lower() for keyword in ['дата', 'date']):
-                numeric_end = i
-            else:
-                break
-        
-        return numeric_start, numeric_end
-    
-    def _process_norm_rows_vectorized(
-        self, 
-        rows, 
-        headers: list[str], 
-        norm_type: str,
-        numeric_start: int, 
-        numeric_end: int
-    ) -> dict[str, NormDict]:
-        """Векторизованная обработка строк норм."""
-        norms = {}
-        
-        # Подготавливаем векторы для batch обработки
-        row_data_batch = []
-        
-        for row in rows:
-            cells = row.find_all(['td', 'th'])
-            if len(cells) <= 10:  # Слишком мало данных
-                continue
-            
-            row_data = self._extract_row_data_optimized(cells, headers, numeric_start, numeric_end)
-            if row_data:
-                row_data_batch.append(row_data)
-        
-        # Векторизованная обработка batch'а
-        for row_data in row_data_batch:
-            norm_data = self._create_norm_data_optimized(row_data, norm_type)
-            if norm_data and norm_data.get('norm_id'):
-                norms[norm_data['norm_id']] = norm_data
-        
-        return norms
-    
-    def _extract_row_data_optimized(
-        self, 
-        cells, 
-        headers: list[str], 
-        numeric_start: int, 
-        numeric_end: int
-    ) -> Optional[dict]:
-        """Оптимизированное извлечение данных строки."""
+    def _safe_remove_file(self, file_path: str):
+        """Безопасно удаляет файл."""
         try:
-            row_data = []
-            norm_id = ""
-            
-            # Обрабатываем ячейки векторизованно
-            for i, cell in enumerate(cells):
-                cell_text = TextCleaner.clean_text(cell.get_text())
-                row_data.append(cell_text)
-                
-                # Извлекаем ID нормы из первой ячейки
-                if i == 0:
-                    link = cell.find('a')
-                    if link and link.get('href'):
-                        norm_id = self._extract_norm_id_from_link_optimized(link['href'])
-            
-            if not norm_id or len(row_data) <= 10:
-                return None
-            
-            # Векторизованное извлечение числовых данных
-            numeric_data = self._extract_numeric_data_vectorized(
-                row_data, headers, numeric_start, numeric_end
-            )
-            
-            if not numeric_data:
-                return None
-            
-            return {
-                'norm_id': norm_id,
-                'row_data': row_data,
-                'numeric_data': numeric_data,
-                'headers': headers
-            }
-            
+            Path(file_path).unlink(missing_ok=True)
         except Exception as e:
-            logger.debug(f"Error extracting row data: {e}")
-            return None
+            logger.debug(f"Не удалось удалить временный файл {file_path}: {e}")
     
-    def _extract_norm_id_from_link_optimized(self, href: str) -> str:
-        """Оптимизированное извлечение ID нормы из ссылки."""
-        match = self.patterns['norm_id_link'].search(href)
-        return match.group(1) if match else ""
-    
-    def _extract_numeric_data_vectorized(
-        self, 
-        row_data: list[str], 
-        headers: list[str], 
-        numeric_start: int, 
-        numeric_end: int
-    ) -> dict[float, float]:
-        """Векторизованное извлечение числовых данных норм."""
-        numeric_data = {}
+    def compare_norms(self, new_norms: Dict[str, Dict], 
+                     existing_norms: Dict[str, Dict]) -> Dict[str, str]:
+        """Сравнивает новые нормы с существующими с улучшенной логикой."""
+        logger.info("Сравниваем новые нормы с существующими")
         
-        # Векторизованная обработка числовых колонок
-        for i in range(numeric_start, min(numeric_end, len(row_data), len(headers))):
-            if not row_data[i].strip():
-                continue
-            
+        comparison_result = {}
+        
+        for norm_id, new_norm in new_norms.items():
             try:
-                # Векторизованное преобразование заголовка и значения
-                header_value = TextCleaner.extract_number(headers[i])
-                consumption_value = TextCleaner.extract_number(row_data[i])
-                
-                if header_value is not None and consumption_value is not None:
-                    numeric_data[float(header_value)] = float(consumption_value)
-                    
-            except (ValueError, TypeError):
+                if norm_id not in existing_norms:
+                    comparison_result[norm_id] = 'new'
+                    self.processing_stats.new_items += 1
+                else:
+                    existing_norm = existing_norms[norm_id]
+                    if self._norms_are_different(new_norm, existing_norm):
+                        comparison_result[norm_id] = 'updated'
+                        self.processing_stats.updated_items += 1
+                    else:
+                        comparison_result[norm_id] = 'unchanged'
+            except Exception as e:
+                logger.error(f"Ошибка сравнения нормы {norm_id}: {e}")
+                comparison_result[norm_id] = 'error'
                 continue
         
-        return numeric_data
-    
-    def _create_norm_data_optimized(self, row_data: dict, norm_type: str) -> Optional[NormDict]:
-        """Оптимизированное создание данных нормы."""
-        try:
-            norm_id = row_data['norm_id']
-            numeric_data = row_data['numeric_data']
-            raw_data = row_data['row_data']
-            
-            if not numeric_data:
-                return None
-            
-            # Создаем объект нормы
-            points = [(load, consumption) for load, consumption in sorted(numeric_data.items())]
-            
-            # Создаем базовые данные с векторизацией
-            base_data = self._create_base_data_vectorized(raw_data)
-            
-            return {
-                'norm_id': norm_id,
-                'norm_type': norm_type,
-                'description': f"Норма №{norm_id} ({norm_type})",
-                'points': points,
-                'base_data': base_data
-            }
-            
-        except Exception as e:
-            logger.debug(f"Error creating norm data: {e}")
-            return None
-    
-    def _create_base_data_vectorized(self, raw_data: list[str]) -> dict:
-        """Векторизованное создание базовых данных нормы."""
-        base_fields = [
-            'priznok_sost_tyag', 'priznok_rek', 'vid_dvizheniya', 
-            'simvol_rod_raboty', 'rps', 'identif_gruppy',
-            'priznok_sost', 'priznok_alg'
-        ]
-        
-        base_data = {}
-        
-        # Векторизованная обработка полей
-        for i, field in enumerate(base_fields, 1):
-            if i < len(raw_data):
-                value = self._convert_to_number_optimized(raw_data[i])
-                if value is not None:
-                    base_data[field] = value
-        
-        # Добавляем даты (последние две колонки)
-        if len(raw_data) >= 2:
-            base_data['date_start'] = raw_data[-2] if raw_data[-2] else ''
-            base_data['date_end'] = raw_data[-1] if raw_data[-1] else ''
-        
-        return base_data
-    
-    def _convert_to_number_optimized(self, text: str):
-        """Оптимизированное преобразование текста в число."""
-        if not text or not text.strip():
-            return None
-        
-        cleaned_text = TextCleaner.clean_text(text)
-        
-        # Быстрая проверка на число
-        try:
-            if '.' in cleaned_text or ',' in cleaned_text:
-                return float(cleaned_text.replace(',', '.'))
-            else:
-                return int(cleaned_text)
-        except (ValueError, TypeError):
-            return cleaned_text  # Возвращаем как текст если не число
-    
-    def _validate_and_cache_norm(self, norm_id: str, norm_data: NormDict) -> bool:
-        """Валидирует и кэширует норму."""
-        try:
-            # Создаем объект NormDefinition
-            norm_definition = NormDefinition(
-                norm_id=norm_id,
-                points=norm_data['points'],
-                description=norm_data.get('description', ''),
-                norm_type=norm_data.get('norm_type', 'Unknown')
-            )
-            
-            # Валидируем если включена валидация
-            if self.config.enable_validation:
-                is_valid, message = norm_definition.validate()
-                if not is_valid:
-                    logger.debug(f"Norm {norm_id} validation failed: {message}")
-                    return False
-            
-            # Кэшируем норму
-            self.norms_cache[norm_id] = norm_definition
-            
-            # Управление размером кэша
-            if len(self.norms_cache) > self.config.cache_size:
-                self._cleanup_cache()
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error validating/caching norm {norm_id}: {e}")
-            return False
-    
-    def _cleanup_cache(self) -> None:
-        """Очищает кэш до разумного размера."""
-        if len(self.norms_cache) <= self.config.cache_size:
-            return
-        
-        # Удаляем 20% старых записей (простая стратегия)
-        items_to_remove = len(self.norms_cache) - int(self.config.cache_size * 0.8)
-        
-        # Удаляем первые элементы (как FIFO)
-        keys_to_remove = list(self.norms_cache.keys())[:items_to_remove]
-        
-        for key in keys_to_remove:
-            del self.norms_cache[key]
-        
-        logger.debug(f"Cache cleaned up: removed {items_to_remove} entries")
-    
-    def get_norm(self, norm_id: str) -> Optional[NormDict]:
-        """Получает норму по ID."""
-        norm_def = self.norms_cache.get(norm_id)
-        
-        if norm_def:
-            return {
-                'norm_id': norm_def.norm_id,
-                'points': norm_def.points,
-                'description': norm_def.description,
-                'norm_type': norm_def.norm_type
-            }
-        
-        return None
-    
-    def get_all_norms(self) -> dict[str, NormDict]:
-        """Возвращает все кэшированные нормы."""
-        result = {}
-        
-        for norm_id, norm_def in self.norms_cache.items():
-            result[norm_id] = {
-                'norm_id': norm_def.norm_id,
-                'points': norm_def.points,
-                'description': norm_def.description,
-                'norm_type': norm_def.norm_type
-            }
-        
-        return result
-    
-    def validate_norms(self) -> dict[str, ValidationResult]:
-        """Валидирует все кэшированные нормы."""
-        validation_results = {}
-        
-        for norm_id, norm_def in self.norms_cache.items():
-            is_valid, message = norm_def.validate()
-            validation_results[norm_id] = (is_valid, message)
-        
-        # Статистика валидации
-        valid_count = sum(1 for valid, _ in validation_results.values() if valid)
-        total_count = len(validation_results)
-        
-        logger.info(f"Norm validation completed: {valid_count}/{total_count} valid")
-        
-        return validation_results
-    
-    def get_storage_info(self) -> dict:
-        """Возвращает информацию о хранилище норм."""
-        return {
-            'cached_norms': len(self.norms_cache),
-            'cache_size_limit': self.config.cache_size,
-            'memory_usage_mb': self._estimate_memory_usage(),
-            'processing_stats': dict(self.processing_stats)
-        }
-    
-    def get_storage_statistics(self) -> dict:
-        """Возвращает статистику норм."""
-        if not self.norms_cache:
-            return {'total_norms': 0}
-        
-        # Векторизованный расчет статистики
-        points_counts = [len(norm.points) for norm in self.norms_cache.values()]
-        norm_types = [norm.norm_type for norm in self.norms_cache.values()]
-        
-        # Статистика по типам
-        type_counts = pd.Series(norm_types).value_counts().to_dict()
-        
-        # Диапазоны значений
-        all_loads = []
-        all_consumptions = []
-        
-        for norm in self.norms_cache.values():
-            if norm.points:
-                loads, consumptions = zip(*norm.points)
-                all_loads.extend(loads)
-                all_consumptions.extend(consumptions)
-        
-        return {
-            'total_norms': len(self.norms_cache),
-            'by_type': type_counts,
-            'avg_points_per_norm': np.mean(points_counts) if points_counts else 0,
-            'load_range': {
-                'min': min(all_loads) if all_loads else 0,
-                'max': max(all_loads) if all_loads else 0
-            },
-            'consumption_range': {
-                'min': min(all_consumptions) if all_consumptions else 0,
-                'max': max(all_consumptions) if all_consumptions else 0
-            },
-            'points_distribution': pd.Series(points_counts).value_counts().to_dict()
-        }
-    
-    def _estimate_memory_usage(self) -> float:
-        """Оценивает потребление памяти кэшем в МБ."""
-        if not self.norms_cache:
-            return 0.0
-        
-        # Простая оценка: количество норм * средний размер нормы
-        avg_points_per_norm = np.mean([len(norm.points) for norm in self.norms_cache.values()])
-        
-        # Примерный размер одной нормы в байтах
-        bytes_per_norm = (
-            100 +  # Базовые поля
-            avg_points_per_norm * 16 +  # Точки (2 float по 8 байт)
-            50  # Дополнительные данные
+        logger.info(
+            f"Результат сравнения: "
+            f"новых {self.processing_stats.new_items}, "
+            f"обновленных {self.processing_stats.updated_items}"
         )
         
-        total_bytes = len(self.norms_cache) * bytes_per_norm
-        return total_bytes / (1024 * 1024)  # Конвертируем в МБ
+        return comparison_result
     
-    def get_processing_stats(self) -> ProcessingStats:
-        """Возвращает статистику обработки."""
-        return dict(self.processing_stats)
-    
-    def clear_cache(self) -> None:
-        """Очищает кэш норм."""
-        cleared_count = len(self.norms_cache)
-        self.norms_cache.clear()
-        logger.info(f"Norm cache cleared: {cleared_count} norms removed")
-    
-    def export_norms_to_json(self, output_file: Path | str) -> bool:
-        """Экспортирует нормы в JSON файл."""
+    def _norms_are_different(self, norm1: Dict, norm2: Dict) -> bool:
+        """Сравнивает две нормы на предмет различий с улучшенным алгоритмом."""
         try:
-            import json
+            # Быстрая проверка по типу нормы
+            if norm1.get('norm_type') != norm2.get('norm_type'):
+                return True
             
-            output_path = Path(output_file)
+            # Сравниваем точки с учетом плавающей точки
+            points1 = set(
+                (round(p[0], 6), round(p[1], 6)) 
+                for p in norm1.get('points', [])
+            )
+            points2 = set(
+                (round(p[0], 6), round(p[1], 6)) 
+                for p in norm2.get('points', [])
+            )
             
-            # Подготавливаем данные для экспорта
-            export_data = {
-                'metadata': {
-                    'total_norms': len(self.norms_cache),
-                    'export_timestamp': pd.Timestamp.now().isoformat(),
-                    'processing_stats': dict(self.processing_stats)
-                },
-                'norms': {}
+            if points1 != points2:
+                return True
+            
+            # Сравниваем базовые данные
+            base1 = norm1.get('base_data', {})
+            base2 = norm2.get('base_data', {})
+            
+            # Сравниваем только значимые поля
+            significant_fields = [
+                'priznok_sost_tyag', 'priznok_rek', 'vid_dvizheniya',
+                'simvol_rod_raboty', 'rps', 'identif_gruppy',
+                'priznok_sost', 'priznok_alg'
+            ]
+            
+            for field in significant_fields:
+                val1 = base1.get(field)
+                val2 = base2.get(field)
+                
+                # Для числовых значений используем приближенное сравнение
+                if isinstance(val1, (int, float)) and isinstance(val2, (int, float)):
+                    if abs(val1 - val2) > 1e-6:
+                        return True
+                elif val1 != val2:
+                    return True
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"Ошибка сравнения норм: {e}")
+            return True  # В случае ошибки считаем, что нормы разные
+    
+    def get_processing_stats(self) -> Dict:
+        """Возвращает статистику обработки в формате словаря для совместимости."""
+        stats = self.processing_stats.to_dict()
+        # Добавляем специфичные для норм поля для обратной совместимости
+        stats['total_norms_found'] = stats['total_items_found']
+        stats['new_norms'] = stats['new_items']
+        stats['updated_norms'] = stats['updated_items']
+        return stats
+    
+    def get_norm_by_id(self, norm_id: str) -> Optional[Dict]:
+        """Возвращает норму по ID."""
+        norm = self.processed_norms.get(norm_id)
+        return norm.to_dict() if norm else None
+    
+    def get_norms_by_type(self, norm_type: str) -> Dict[str, Dict]:
+        """Возвращает нормы определенного типа."""
+        try:
+            target_type = NormType.AXLE_LOAD if norm_type == "Нажатие" else NormType.TRAIN_WEIGHT
+            return {
+                norm_id: norm.to_dict() 
+                for norm_id, norm in self.processed_norms.items()
+                if norm.norm_type == target_type
             }
+        except Exception as e:
+            logger.error(f"Ошибка фильтрации норм по типу {norm_type}: {e}")
+            return {}
+    
+    def get_norm_statistics(self) -> Dict[str, int]:
+        """Возвращает статистику по типам норм."""
+        stats = {
+            'total': len(self.processed_norms),
+            'axle_load': 0,
+            'train_weight': 0
+        }
+        
+        for norm in self.processed_norms.values():
+            if norm.norm_type == NormType.AXLE_LOAD:
+                stats['axle_load'] += 1
+            elif norm.norm_type == NormType.TRAIN_WEIGHT:
+                stats['train_weight'] += 1
+        
+        return stats
+    
+    def validate_norm_data(self, norm_data: Dict) -> bool:
+        """Валидирует данные нормы."""
+        try:
+            # Проверяем обязательные поля
+            required_fields = ['norm_id', 'norm_type', 'points']
+            for field in required_fields:
+                if field not in norm_data:
+                    return False
             
-            # Конвертируем нормы в JSON-serializable формат
-            for norm_id, norm_def in self.norms_cache.items():
-                export_data['norms'][norm_id] = {
-                    'norm_id': norm_def.norm_id,
-                    'points': norm_def.points,
-                    'description': norm_def.description,
-                    'norm_type': norm_def.norm_type,
-                    'load_range': norm_def.load_range,
-                    'consumption_range': norm_def.consumption_range
-                }
+            # Проверяем структуру точек
+            points = norm_data.get('points', [])
+            if not isinstance(points, list):
+                return False
             
-            # Сохраняем в файл
-            with open(output_path, 'w', encoding='utf-8') as f:
-                json.dump(export_data, f, ensure_ascii=False, indent=2)
+            for point in points:
+                if not isinstance(point, (list, tuple)) or len(point) != 2:
+                    return False
+                if not all(isinstance(x, (int, float)) for x in point):
+                    return False
             
-            logger.info(f"Norms exported to JSON: {output_path}")
             return True
             
         except Exception as e:
-            logger.error(f"Error exporting norms to JSON: {e}")
+            logger.error(f"Ошибка валидации нормы: {e}")
             return False
     
-    def import_norms_from_json(self, input_file: Path | str) -> bool:
-        """Импортирует нормы из JSON файла."""
-        try:
-            import json
-            
-            input_path = Path(input_file)
-            
-            with open(input_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            
-            imported_norms = data.get('norms', {})
-            if not imported_norms:
-                logger.warning("No norms found in JSON file")
-                return False
-            
-            # Импортируем нормы
-            imported_count = 0
-            for norm_id, norm_data in imported_norms.items():
-                try:
-                    norm_definition = NormDefinition(
-                        norm_id=norm_data['norm_id'],
-                        points=norm_data['points'],
-                        description=norm_data.get('description', ''),
-                        norm_type=norm_data.get('norm_type', 'Unknown')
-                    )
-                    
-                    self.norms_cache[norm_id] = norm_definition
-                    imported_count += 1
-                    
-                except Exception as e:
-                    logger.error(f"Error importing norm {norm_id}: {e}")
-                    continue
-            
-            logger.info(f"Imported {imported_count} norms from JSON: {input_path}")
-            return imported_count > 0
-            
-        except Exception as e:
-            logger.error(f"Error importing norms from JSON: {e}")
-            return False
+    def export_norms_summary(self) -> Dict[str, any]:
+        """Экспортирует сводку по нормам."""
+        summary = {
+            'total_norms': len(self.processed_norms),
+            'by_type': {},
+            'processing_stats': self.get_processing_stats(),
+            'sample_norms': {}
+        }
+        
+        # Группируем по типам
+        for norm in self.processed_norms.values():
+            norm_type = norm.norm_type.value
+            if norm_type not in summary['by_type']:
+                summary['by_type'][norm_type] = []
+            summary['by_type'][norm_type].append(norm.norm_id)
+        
+        # Добавляем примеры норм (первые 3 из каждого типа)
+        for norm_type, norm_ids in summary['by_type'].items():
+            summary['sample_norms'][norm_type] = norm_ids[:3]
+        
+        return summary
+    
+    def clear_processed_data(self):
+        """Очищает обработанные данные для экономии памяти."""
+        self.processed_norms.clear()
+        logger.info("Обработанные данные норм очищены")
