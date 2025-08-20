@@ -493,35 +493,36 @@ class NormsAnalyzerGUI:
             self.root.after(0, self._update_routes_load_status, False)
     
     def _update_routes_load_status(self, success: bool):
-        """Обновляет статус загрузки маршрутов"""
-        try:
-            if success:
-                self.load_status.config(text="Маршруты загружены", style='Success.TLabel')
+            """Обновляет статус загрузки маршрутов"""
+            try:
+                if success:
+                    self.load_status.config(text="Маршруты загружены", style='Success.TLabel')
+                    
+                    # Обновляем список участков
+                    sections = self.analyzer.get_sections_list()
+                    self.section_combo['values'] = sections
+                    
+                    # Активируем кнопки
+                    self.analyze_button.config(state='normal')
+                    self.filter_button.config(state='normal')
+                    self.export_excel_button.config(state='normal')
+                    self.routes_info_button.config(state='normal')
+                    
+                    # Создаем фильтр локомотивов
+                    routes_data = self.analyzer.get_routes_data()
+                    # ИСПРАВЛЕНИЕ: Правильная проверка DataFrame
+                    if routes_data is not None and not routes_data.empty:
+                        self.locomotive_filter = LocomotiveFilter(routes_data)
+                    
+                    logger.info("Маршруты загружены успешно")
+                else:
+                    self.load_status.config(text="Ошибка загрузки маршрутов", style='Error.TLabel')
+                    logger.error("Ошибка загрузки маршрутов")
                 
-                # Обновляем список участков
-                sections = self.analyzer.get_sections_list()
-                self.section_combo['values'] = sections
-                
-                # Активируем кнопки
-                self.analyze_button.config(state='normal')
-                self.filter_button.config(state='normal')
-                self.export_excel_button.config(state='normal')
-                self.routes_info_button.config(state='normal')
-                
-                # Создаем фильтр локомотивов
-                routes_data = self.analyzer.get_routes_data()
-                if not routes_data.empty:
-                    self.locomotive_filter = LocomotiveFilter(routes_data)
-                
-                logger.info("Маршруты загружены успешно")
-            else:
-                self.load_status.config(text="Ошибка загрузки маршрутов", style='Error.TLabel')
-                logger.error("Ошибка загрузки маршрутов")
-            
-            self.load_routes_button.config(state='normal')
-        except Exception as e:
-            logger.error(f"Ошибка обновления статуса загрузки маршрутов: {e}")
-            self.load_routes_button.config(state='normal')
+                self.load_routes_button.config(state='normal')
+            except Exception as e:
+                logger.error(f"Ошибка обновления статуса загрузки маршрутов: {e}")
+                self.load_routes_button.config(state='normal')
     
     def load_norms(self):
         """Загружает нормы из HTML файлов"""
@@ -600,35 +601,51 @@ class NormsAnalyzerGUI:
             logger.error(f"Ошибка изменения фильтра: {e}")
     
     def _update_norms_and_section_info(self):
-        """Обновляет список норм с количеством маршрутов и информацию об участке"""
-        try:
-            section = self.section_var.get()
-            if not section or self.analyzer is None:
-                return
-            
-            single_section_filter = self.single_section_only.get()
-            
-            # Получаем нормы с количеством маршрутов
-            norms_with_counts = self.analyzer.get_norms_with_counts_for_section(section, single_section_filter)
-            
-            # Формируем список для отображения
-            norm_values = ["Все нормы"]
-            for norm_id, count in norms_with_counts:
-                norm_values.append(f"Норма {norm_id} ({count} маршрутов)")
-            
-            # Обновляем combo box
-            self.norm_combo['values'] = norm_values
-            self.norm_var.set("Все нормы")
-            self.norm_info_button.config(state='disabled')
-            
-            # Обновляем информацию об участке
-            total_routes = self.analyzer.get_routes_count_for_section(section, single_section_filter)
-            filter_text = " (только один участок)" if single_section_filter else ""
-            self.section_info_label.config(text=f"Участок: {total_routes} маршрутов{filter_text}")
-            
-            logger.debug(f"Обновлены нормы для участка {section}: {len(norms_with_counts)} норм, {total_routes} маршрутов")
-        except Exception as e:
-            logger.error(f"Ошибка обновления информации об участке: {e}")
+            """ИСПРАВЛЕННЫЙ метод обновления информации о нормах и участке."""
+            try:
+                section = self.section_var.get()
+                if not section or self.analyzer is None:
+                    return
+                
+                single_section_filter = self.single_section_only.get()
+                
+                # ИСПРАВЛЕНИЕ: Безопасное получение норм с количеством
+                try:
+                    norms_with_counts = self.analyzer.get_norms_with_counts_for_section(
+                        section, single_section_filter
+                    )
+                except Exception as e:
+                    logger.error(f"Ошибка получения норм для участка {section}: {e}")
+                    norms_with_counts = []
+                
+                # Формируем список для отображения
+                norm_values = ["Все нормы"]
+                for norm_id, count in norms_with_counts:
+                    norm_values.append(f"Норма {norm_id} ({count} маршрутов)")
+                
+                # Обновляем combo box
+                self.norm_combo['values'] = norm_values
+                self.norm_var.set("Все нормы")
+                self.norm_info_button.config(state='disabled')
+                
+                # ИСПРАВЛЕНИЕ: Безопасный подсчет маршрутов
+                try:
+                    total_routes = self.analyzer.get_routes_count_for_section(
+                        section, single_section_filter
+                    )
+                except Exception as e:
+                    logger.error(f"Ошибка подсчета маршрутов для участка {section}: {e}")
+                    total_routes = 0
+                
+                # Обновляем информацию об участке
+                filter_text = " (только один участок)" if single_section_filter else ""
+                self.section_info_label.config(text=f"Участок: {total_routes} маршрутов{filter_text}")
+                
+                logger.debug(f"Обновлена информация для участка {section}: "
+                            f"{len(norms_with_counts)} норм, {total_routes} маршрутов")
+                
+            except Exception as e:
+                logger.error(f"Ошибка обновления информации об участке: {e}")
     
     def on_norm_selected(self, event=None):
         """Обработчик выбора нормы"""

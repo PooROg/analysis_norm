@@ -78,7 +78,7 @@ class BasicFilterStrategy:
     
     def apply_filter(self, routes_df: pd.DataFrame, config: FilterConfig) -> pd.DataFrame:
         """Применяет базовую фильтрацию по сериям и номерам."""
-        if routes_df.empty:
+        if routes_df is None or routes_df.empty:
             return routes_df
         
         filtered_df = routes_df.copy()
@@ -306,7 +306,7 @@ class LocomotiveFilter:
         Returns:
             Отфильтрованный DataFrame
         """
-        if routes_df.empty:
+        if routes_df is None or routes_df.empty:
             logger.warning("Передан пустой DataFrame для фильтрации")
             return routes_df
         

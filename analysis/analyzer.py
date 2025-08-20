@@ -531,9 +531,10 @@ class InteractiveNormsAnalyzer:
                 section_name, norm_id, single_section_only, locomotive_filter
             )
             
-            if section_routes.empty:
-                return None, None, self._get_empty_data_message(section_name, norm_id, single_section_only)
-            
+            # ИСПРАВЛЕНИЕ: Правильная проверка результата фильтрации
+            if section_routes is None or section_routes.empty:
+                return None, None, self._get_empty_data_message(section_name, norm_id, single_section_only)         
+       
             # Применение коэффициентов
             if use_coefficients and coefficients_manager:
                 section_routes = self.data_processor.apply_coefficients(section_routes, coefficients_manager)
@@ -547,7 +548,7 @@ class InteractiveNormsAnalyzer:
             # Анализ данных участка
             analyzed_data, norm_functions = self._analyze_section_data(section_name, section_routes, norm_id)
             
-            if analyzed_data.empty:
+            if analyzed_data is None or analyzed_data.empty:
                 return None, None, f"Не удалось проанализировать участок {section_name}"
             
             # Создание графика и статистики
@@ -576,7 +577,7 @@ class InteractiveNormsAnalyzer:
     
     def _validate_and_clean_data(self, routes_df: pd.DataFrame) -> pd.DataFrame:
         """Валидирует и очищает данные маршрутов."""
-        if routes_df.empty:
+        if routes_df is None or routes_df.empty:
             return routes_df
         
         try:
@@ -609,40 +610,78 @@ class InteractiveNormsAnalyzer:
             return routes_df
     
     def _filter_section_routes(self, section_name: str, norm_id: Optional[str], 
-                              single_section_only: bool, 
-                              locomotive_filter: Optional[Any]) -> pd.DataFrame:
-        """Фильтрует маршруты по заданным критериям"""
-        try:
-            # Базовая фильтрация по участку (векторизованная операция)
-            section_routes = self.routes_df[
-                self.routes_df['Наименование участка'] == section_name
-            ].copy()
-            
-            # Фильтрация по одному участку (оптимизированная)
-            if single_section_only:
-                # Кэшируем подсчет секций для избежания повторных вычислений
-                route_section_counts = self.routes_df.groupby(['Номер маршрута', 'Дата маршрута']).size()
-                single_section_routes = route_section_counts[route_section_counts == 1].index
+                                single_section_only: bool, 
+                                locomotive_filter: Optional[Any]) -> pd.DataFrame:
+            """ИСПРАВЛЕННЫЙ метод фильтрации маршрутов по заданным критериям"""
+            try:
+                # ИСПРАВЛЕНИЕ: Правильная проверка DataFrame
+                if self.routes_df is None or self.routes_df.empty:
+                    logger.warning("Нет данных маршрутов для фильтрации")
+                    return pd.DataFrame()
                 
-                section_routes = section_routes.set_index(['Номер маршрута', 'Дата маршрута'])
-                section_routes = section_routes.loc[section_routes.index.intersection(single_section_routes)]
-                section_routes = section_routes.reset_index()
-            
-            # Фильтрация по норме (векторизованная)
-            if norm_id:
-                section_routes = section_routes[
-                    section_routes['Номер нормы'].astype(str) == str(norm_id)
-                ]
-            
-            # Применение фильтра локомотивов
-            if locomotive_filter:
-                section_routes = locomotive_filter.filter_routes(section_routes)
-            
-            return section_routes
-            
-        except Exception as e:
-            logger.error(f"Ошибка фильтрации маршрутов: {e}")
-            return pd.DataFrame()
+                # Базовая фильтрация по участку (векторизованная операция)
+                section_routes = self.routes_df[
+                    self.routes_df['Наименование участка'] == section_name
+                ].copy()
+                
+                # ИСПРАВЛЕНИЕ: Проверяем результат фильтрации
+                if section_routes is None or section_routes.empty:
+                    logger.warning(f"Нет маршрутов для участка {section_name}")
+                    return pd.DataFrame()
+                
+                # Фильтрация по одному участку (оптимизированная)
+                if single_section_only:
+                    try:
+                        # Кэшируем подсчет секций для избежания повторных вычислений
+                        route_section_counts = self.routes_df.groupby(['Номер маршрута', 'Дата маршрута']).size()
+                        single_section_routes = route_section_counts[route_section_counts == 1].index
+                        
+                        section_routes = section_routes.set_index(['Номер маршрута', 'Дата маршрута'])
+                        section_routes = section_routes.loc[
+                            section_routes.index.intersection(single_section_routes)
+                        ]
+                        section_routes = section_routes.reset_index()
+                        
+                        # ИСПРАВЛЕНИЕ: Проверяем результат после фильтрации
+                        if section_routes is None or section_routes.empty:
+                            logger.warning(f"Нет маршрутов с одним участком для {section_name}")
+                            return pd.DataFrame()
+                            
+                    except Exception as e:
+                        logger.error(f"Ошибка фильтрации по одному участку: {e}")
+                        return pd.DataFrame()
+                
+                # Фильтрация по норме (векторизованная)
+                if norm_id:
+                    section_routes = section_routes[
+                        section_routes['Номер нормы'].astype(str) == str(norm_id)
+                    ]
+                    
+                    # ИСПРАВЛЕНИЕ: Проверяем результат фильтрации по норме
+                    if section_routes is None or section_routes.empty:
+                        logger.warning(f"Нет маршрутов с нормой {norm_id}")
+                        return pd.DataFrame()
+                
+                # Применение фильтра локомотивов
+                if locomotive_filter:
+                    try:
+                        section_routes = locomotive_filter.filter_routes(section_routes)
+                        
+                        # ИСПРАВЛЕНИЕ: Проверяем результат фильтрации локомотивов
+                        if section_routes is None or section_routes.empty:
+                            logger.warning("Нет маршрутов после применения фильтра локомотивов")
+                            return pd.DataFrame()
+                            
+                    except Exception as e:
+                        logger.error(f"Ошибка применения фильтра локомотивов: {e}")
+                        return pd.DataFrame()
+                
+                logger.debug(f"Отфильтровано {len(section_routes)} маршрутов для участка {section_name}")
+                return section_routes
+                
+            except Exception as e:
+                logger.error(f"Ошибка фильтрации маршрутов: {e}")
+                return pd.DataFrame()
     
     def _analyze_section_data(self, section_name: str, routes_df: pd.DataFrame, 
                              specific_norm_id: Optional[str] = None) -> Tuple[pd.DataFrame, NormFunctions]:
@@ -872,26 +911,44 @@ class InteractiveNormsAnalyzer:
         return "_".join(parts)
     
     # Методы для совместимости с существующим интерфейсом
-    def get_norms_with_counts_for_section(self, section_name: str, single_section_only: bool = False) -> List[Tuple[str, int]]:
-        """Возвращает список норм для участка с количеством маршрутов"""
-        if self.routes_df is None or self.routes_df.empty:
-            return []
-        
-        try:
-            section_routes = self._filter_section_routes(section_name, None, single_section_only, None)
-            if section_routes.empty:
+    def get_norms_with_counts_for_section(self, section_name: str, 
+                                            single_section_only: bool = False) -> List[Tuple[str, int]]:
+            """ИСПРАВЛЕННЫЙ метод возвращает список норм для участка с количеством маршрутов"""
+            # ИСПРАВЛЕНИЕ: Правильная проверка DataFrame
+            if self.routes_df is None or self.routes_df.empty:
+                logger.warning("Нет данных маршрутов")
                 return []
             
-            norm_counts = section_routes['Номер нормы'].value_counts()
-            norms_with_counts = [
-                (norm, norm_counts.get(int(norm) if norm.isdigit() else norm, 0))
-                for norm in self.get_norms_for_section(section_name)
-            ]
-            
-            return sorted(norms_with_counts, key=lambda x: int(x[0]) if x[0].isdigit() else float('inf'))
-        except Exception as e:
-            logger.error(f"Ошибка получения норм с подсчетом: {e}")
-            return []
+            try:
+                section_routes = self._filter_section_routes(section_name, None, single_section_only, None)
+                
+                # ИСПРАВЛЕНИЕ: Правильная проверка результата фильтрации
+                if section_routes is None or section_routes.empty:
+                    logger.warning(f"Нет маршрутов для участка {section_name}")
+                    return []
+                
+                # Подсчитываем количество маршрутов по нормам
+                norm_counts = section_routes['Номер нормы'].value_counts()
+                norms_list = self.get_norms_for_section(section_name)
+                
+                norms_with_counts = []
+                for norm in norms_list:
+                    try:
+                        # Безопасное получение количества
+                        if pd.notna(norm):  # Проверяем что норма не NaN
+                            count = norm_counts.get(norm, 0)
+                            if pd.notna(count):  # Проверяем что count не NaN
+                                norms_with_counts.append((str(norm), int(count)))
+                    except Exception as e:
+                        logger.debug(f"Ошибка обработки нормы {norm}: {e}")
+                        continue
+                
+                # Сортируем по номеру нормы
+                return sorted(norms_with_counts, key=lambda x: int(x[0]) if x[0].isdigit() else float('inf'))
+                
+            except Exception as e:
+                logger.error(f"Ошибка получения норм с подсчетом: {e}")
+                return []
     
     def get_norm_info(self, norm_id: str) -> Optional[Dict]:
         """Возвращает информацию о норме"""
@@ -926,13 +983,19 @@ class InteractiveNormsAnalyzer:
     
     # Дополнительные методы для API совместимости
     def get_routes_count_for_section(self, section_name: str, single_section_only: bool = False) -> int:
-        """Возвращает общее количество маршрутов для участка"""
-        try:
-            section_routes = self._filter_section_routes(section_name, None, single_section_only, None)
-            return len(section_routes)
-        except Exception as e:
-            logger.error(f"Ошибка подсчета маршрутов: {e}")
-            return 0
+            """ИСПРАВЛЕННЫЙ метод возвращает общее количество маршрутов для участка"""
+            try:
+                section_routes = self._filter_section_routes(section_name, None, single_section_only, None)
+                
+                # ИСПРАВЛЕНИЕ: Правильная проверка результата
+                if section_routes is None or section_routes.empty:
+                    return 0
+                    
+                return len(section_routes)
+                
+            except Exception as e:
+                logger.error(f"Ошибка подсчета маршрутов: {e}")
+                return 0
     
     def get_norm_routes_count_for_section(self, section_name: str, norm_id: str, single_section_only: bool = False) -> int:
         """Возвращает количество маршрутов для конкретной нормы в участке"""
