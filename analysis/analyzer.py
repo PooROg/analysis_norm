@@ -375,11 +375,28 @@ class InteractiveNormsAnalyzer:
                 norm_data = self.norm_storage.get_norm(norm_number_str)
                 if norm_data and norm_data.get('points'):
                     try:
-                        func = self.norm_storage.get_norm_function(norm_number_str)
+                        # Получаем базовые точки нормы
+                        base_points = norm_data['points'].copy()
+                        
+                        # Добавляем дополнительные точки из маршрутов
+                        additional_points = self._extract_additional_norm_points(routes_df, norm_number_str, norm_data.get('norm_type', 'Нажатие'))
+                        
+                        # Объединяем все точки
+                        all_points = base_points + additional_points
+                        
+                        # Удаляем дубликаты и сортируем
+                        all_points = self._remove_duplicate_points(all_points)
+                        all_points.sort(key=lambda x: x[0])
+                        
+                        # Создаем функцию интерполяции с объединенными точками
+                        func = self.norm_storage._create_interpolation_function(all_points)
+                        
                         if func:
                             norm_functions[norm_number_str] = {
                                 'function': func,
-                                'points': norm_data['points'],
+                                'points': all_points,  # Используем объединенные точки
+                                'base_points': base_points,  # Сохраняем оригинальные для отображения
+                                'additional_points': additional_points,  # Сохраняем дополнительные для отображения
                                 'x_range': (
                                     min(p[0] for p in norm_data['points']),
                                     max(p[0] for p in norm_data['points'])
@@ -652,18 +669,21 @@ class InteractiveNormsAnalyzer:
                 )
             
             # Добавляем точки норм (ромбики)
-            fig.add_trace(
-                go.Scatter(
-                    x=x_vals,
-                    y=y_vals,
-                    mode='markers',
-                    name=f'Точки нормы {norm_id}',
-                    marker=dict(size=8, symbol='diamond', color='blue'),
-                    hovertemplate=f'<b>Точка нормы {norm_id}</b><br>' +
-                                f'{x_axis_name}: %{{x:.1f}}<br>' +
-                                'Расход: %{y:.1f} кВт·ч/10⁴ ткм<extra></extra>'
-                ),
-                row=1, col=1
+            additional_points = self._extract_additional_norm_points(routes_df, norm_id, norm_type)
+            if additional_points:
+                add_x, add_y = zip(*additional_points)
+                fig.add_trace(
+                    go.Scatter(
+                        x=add_x,
+                        y=add_y,
+                        mode='markers',
+                        name=f'Из маршрутов {norm_id} ({len(additional_points)})',
+                        marker=dict(size=6, symbol='circle', opacity=0.7, color='orange'),
+                        hovertemplate=f'<b>Точка нормы {norm_id}</b><br>' +
+                                    f'{x_axis_name}: %{{x:.1f}}<br>' +
+                                    'Расход: %{y:.1f} кВт·ч/10⁴ ткм<extra></extra>'
+                    ),
+                    row=1, col=1
             )
             
             # ДОБАВИТЬ: Дополнительные точки из маршрутов  
@@ -1269,3 +1289,27 @@ class InteractiveNormsAnalyzer:
         except Exception as e:
             logger.debug(f"Ошибка расчета веса: {e}")
             return None
+
+    def _remove_duplicate_points(self, points: List[Tuple[float, float]], tolerance: float = 0.1) -> List[Tuple[float, float]]:
+        """Удаляет дублирующиеся точки с учетом допуска"""
+        if not points:
+            return []
+        
+        unique_points = []
+        for point in points:
+            x, y = point
+            # Проверяем, нет ли уже близкой точки по X
+            is_duplicate = False
+            for existing_point in unique_points:
+                existing_x, existing_y = existing_point
+                if abs(x - existing_x) <= tolerance:
+                    # Если X близки, берем среднее значение Y
+                    avg_y = (y + existing_y) / 2
+                    unique_points[unique_points.index(existing_point)] = (existing_x, avg_y)
+                    is_duplicate = True
+                    break
+            
+            if not is_duplicate:
+                unique_points.append(point)
+        
+        return unique_points
