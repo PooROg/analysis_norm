@@ -518,6 +518,7 @@ class InteractiveNormsAnalyzer:
             norm_types_used.add(norm_type)
         
         # Отрисовка кривых норм на верхнем графике
+        logger.debug(f"Добавление {len(norm_functions)} норм на график")
         for norm_id, norm_data in norm_functions.items():
             # Пропускаем норму если указана конкретная и это не она
             if specific_norm_id and norm_id != specific_norm_id:
@@ -533,12 +534,13 @@ class InteractiveNormsAnalyzer:
             # Определяем название оси X в зависимости от типа нормы
             x_axis_name = "Вес поезда БРУТТО, т" if norm_type == 'Вес' else "Нажатие на ось, т/ось"
             
+            logger.debug(f"Обработка нормы {norm_id}, тип: {norm_type}, точек: {len(points)}")
+            
             if len(points) == 1:
                 # Для одной точки рисуем горизонтальную линию
                 x_single, y_single = points[0]
                 
                 # Создаем диапазон для отображения константы на основе данных маршрутов
-                # Получаем диапазон X из фактических данных маршрутов
                 x_data_values = []
                 for _, row in routes_df.iterrows():
                     norm_number = row.get('Номер нормы')
@@ -570,7 +572,7 @@ class InteractiveNormsAnalyzer:
                         y=y_const,
                         mode='lines',
                         name=f'Норма {norm_id} ({norm_type}, константа)',
-                        line=dict(width=3, dash='dash'),
+                        line=dict(width=3, dash='dash'),  # Пунктир ТОЛЬКО для констант
                         hovertemplate=f'<b>Норма {norm_id} (константа)</b><br>' +
                                      f'{x_axis_name}: %{{x:.1f}}<br>' +
                                      f'Расход: {y_single:.1f} кВт·ч/10⁴ ткм<extra></extra>'
@@ -579,26 +581,36 @@ class InteractiveNormsAnalyzer:
                 )
                 
             else:
-                # Для двух и более точек строим гиперболу
+                # ИСПРАВЛЕНО: Для двух и более точек строим ГЛАДКУЮ гиперболу
                 x_min, x_max = min(x_vals), max(x_vals)
                 
                 # Расширяем диапазон для лучшего отображения гиперболы
                 x_range = x_max - x_min
-                x_start = max(x_min - x_range * 0.2, x_min * 0.5)
-                x_end = x_max + x_range * 0.2
+                x_start = max(x_min - x_range * 0.3, x_min * 0.5)
+                x_end = x_max + x_range * 0.3
                 
-                # Создаем плотную сетку точек для гиперболы
-                x_interp = np.linspace(x_start, x_end, 200)
+                # ДОБАВИТЬ: Расширяем диапазон на основе дополнительных точек из маршрутов
+                additional_x = self._get_additional_points_for_norm(routes_df, norm_id, norm_type)
+                if additional_x:
+                    x_start = min(x_start, min(additional_x) * 0.8)
+                    x_end = max(x_end, max(additional_x) * 1.2)
+                    logger.debug(f"Расширен диапазон графика для нормы {norm_id} на основе {len(additional_x)} дополнительных точек")
+                
+                # ИСПРАВЛЕНО: Создаем ПЛОТНУЮ сетку точек для ГЛАДКОЙ гиперболы
+                x_interp = np.linspace(x_start, x_end, 500)  # УВЕЛИЧЕНО с 200 до 500!
                 norm_func = norm_data['function']
                 
                 try:
                     y_interp = []
                     for x in x_interp:
                         try:
-                            y_val = norm_func(x)
-                            # Ограничиваем экстремальные значения
-                            if y_val > 0 and y_val < max(y_vals) * 5:
-                                y_interp.append(y_val)
+                            if x > 0:  # Проверка на положительное X для гиперболы
+                                y_val = norm_func(x)
+                                # Ограничиваем экстремальные значения
+                                if y_val > 0 and y_val < max(y_vals) * 10:
+                                    y_interp.append(y_val)
+                                else:
+                                    y_interp.append(np.nan)
                             else:
                                 y_interp.append(np.nan)
                         except:
@@ -610,7 +622,10 @@ class InteractiveNormsAnalyzer:
                     x_interp_clean = x_interp[valid_mask]
                     y_interp_clean = y_interp[valid_mask]
                     
-                except:
+                    logger.debug(f"Создана гипербола для нормы {norm_id}: {len(x_interp_clean)} точек")
+                    
+                except Exception as e:
+                    logger.warning(f"Ошибка построения гиперболы для нормы {norm_id}: {e}")
                     # Fallback для проблемных функций
                     x_interp_clean = x_vals
                     y_interp_clean = y_vals
@@ -621,13 +636,14 @@ class InteractiveNormsAnalyzer:
                 else:
                     curve_name = f'Норма {norm_id} ({norm_type}, {len(points)} точек)'
                 
+                # ИСПРАВЛЕНО: Убираем dash для гипербол!
                 fig.add_trace(
                     go.Scatter(
                         x=x_interp_clean,
                         y=y_interp_clean,
                         mode='lines',
                         name=curve_name,
-                        line=dict(width=2),
+                        line=dict(width=3, color='blue'),  # УБРАЛИ dash! УВЕЛИЧИЛИ width
                         hovertemplate=f'<b>Норма {norm_id}</b><br>' +
                                     f'{x_axis_name}: %{{x:.1f}}<br>' +
                                     'Расход: %{y:.1f} кВт·ч/10⁴ ткм<extra></extra>'
@@ -635,20 +651,41 @@ class InteractiveNormsAnalyzer:
                     row=1, col=1
                 )
             
-            # Добавляем точки норм
+            # Добавляем точки норм (ромбики)
             fig.add_trace(
                 go.Scatter(
                     x=x_vals,
                     y=y_vals,
                     mode='markers',
                     name=f'Точки нормы {norm_id}',
-                    marker=dict(size=8, symbol='diamond'),
+                    marker=dict(size=8, symbol='diamond', color='blue'),
                     hovertemplate=f'<b>Точка нормы {norm_id}</b><br>' +
                                 f'{x_axis_name}: %{{x:.1f}}<br>' +
                                 'Расход: %{y:.1f} кВт·ч/10⁴ ткм<extra></extra>'
                 ),
                 row=1, col=1
             )
+            
+            # ДОБАВИТЬ: Дополнительные точки из маршрутов  
+            additional_points = self._extract_additional_norm_points(routes_df, norm_id, norm_type)
+            if additional_points:
+                add_x, add_y = zip(*additional_points)
+                fig.add_trace(
+                    go.Scatter(
+                        x=add_x,
+                        y=add_y,
+                        mode='markers',
+                        name=f'Из маршрутов {norm_id} ({len(additional_points)})',
+                        marker=dict(size=6, symbol='circle', opacity=0.7, color='orange'),
+                        hovertemplate=f'<b>Из маршрута (норма {norm_id})</b><br>' +
+                                    f'{x_axis_name}: %{{x:.1f}}<br>' +
+                                    'Уд. норма: %{y:.1f} кВт·ч/10⁴ ткм<extra></extra>'
+                    ),
+                    row=1, col=1
+                )
+                logger.info(f"✅ Добавлено {len(additional_points)} дополнительных точек для нормы {norm_id}")
+            else:
+                logger.debug(f"Дополнительные точки для нормы {norm_id} не найдены")
         
         # Цвета для разных статусов
         status_colors = {
@@ -1081,4 +1118,154 @@ class InteractiveNormsAnalyzer:
             return norm_info
         except Exception as e:
             logger.error(f"Ошибка получения информации о норме {norm_id}: {e}")
+            return None
+
+    def _get_additional_points_for_norm(self, routes_df: pd.DataFrame, norm_id: str, norm_type: str) -> List[float]:
+        """Получает X-координаты дополнительных точек для нормы"""
+        x_values = []
+        
+        for _, row in routes_df.iterrows():
+            route_norm_id = row.get('Номер нормы')
+            if pd.notna(route_norm_id) and str(int(route_norm_id)) == norm_id:
+                if norm_type == 'Вес':
+                    x_val = self._calculate_weight_from_data(row)
+                else:
+                    x_val = self._calculate_axle_load_from_data(row)
+                if x_val and x_val > 0:
+                    x_values.append(x_val)
+        
+        return x_values
+
+    def _extract_additional_norm_points(self, routes_df: pd.DataFrame, norm_id: str, norm_type: str) -> List[Tuple[float, float]]:
+        """Извлекает дополнительные точки норм из маршрутов"""
+        points = []
+        logger.debug(f"Поиск дополнительных точек для нормы {norm_id}, тип: {norm_type}")
+        logger.debug(f"Доступные колонки: {list(routes_df.columns)}")
+        
+        # Возможные названия колонок для удельной нормы
+        ud_norma_columns = [
+            'Уд. норма, норма на 1 час ман. раб.',
+            'Удельная норма',
+            'Уд норма',
+            'Норма на 1 час',
+            'УД. НОРМА'
+        ]
+        
+        # Находим реальную колонку удельной нормы
+        ud_norma_col = None
+        for col in ud_norma_columns:
+            if col in routes_df.columns:
+                ud_norma_col = col
+                logger.debug(f"Найдена колонка удельной нормы: {col}")
+                break
+        
+        if not ud_norma_col:
+            logger.debug(f"Колонка удельной нормы не найдена среди: {ud_norma_columns}")
+            return points
+        
+        # Извлекаем точки для конкретной нормы
+        for _, row in routes_df.iterrows():
+            try:
+                route_norm_id = row.get('Номер нормы')
+                if pd.notna(route_norm_id) and str(int(route_norm_id)) == norm_id:
+                    
+                    ud_norma = row.get(ud_norma_col)
+                    
+                    if pd.notna(ud_norma) and ud_norma != '' and ud_norma != '-':
+                        try:
+                            ud_norma_val = float(ud_norma)
+                            
+                            if ud_norma_val > 0:
+                                # Для норм по весу используем расчет веса
+                                if norm_type == 'Вес':
+                                    x_val = self._calculate_weight_from_data(row)
+                                else:
+                                    x_val = self._calculate_axle_load_from_data(row)
+                                
+                                if x_val and x_val > 0:
+                                    points.append((x_val, ud_norma_val))
+                                    
+                        except (ValueError, TypeError):
+                            continue
+                            
+            except Exception as e:
+                logger.debug(f"Ошибка обработки строки: {e}")
+                continue
+        
+        # Убираем дубликаты и сортируем
+        if points:
+            points = list(set(points))
+            points.sort(key=lambda x: x[0])
+        
+        logger.debug(f"Извлечено {len(points)} дополнительных точек для нормы {norm_id}")
+        return points
+
+    def _calculate_weight_from_data(self, row: pd.Series) -> Optional[float]:
+        """Вычисляет вес поезда из данных маршрута"""
+        try:
+            # Сначала пробуем прямые колонки с весом
+            weight_columns = ['БРУТТО', 'Вес БРУТТО', 'Вес поезда БРУТТО', 'Брутто']
+            
+            for col in weight_columns:
+                if col in row.index:
+                    brutto = row.get(col)
+                    if pd.notna(brutto) and brutto != '-' and brutto != '':
+                        try:
+                            weight_val = float(brutto)
+                            if weight_val > 0:
+                                return weight_val
+                        except (ValueError, TypeError):
+                            continue
+            
+            # Если прямых данных нет, рассчитываем из Ткм брутто / км
+            tkm_brutto = row.get('Ткм брутто')
+            km = row.get('Км')
+            
+            if pd.notna(tkm_brutto) and pd.notna(km) and km != 0:
+                try:
+                    weight_calc = float(tkm_brutto) / float(km)
+                    if weight_calc > 0:
+                        return weight_calc
+                except (ValueError, TypeError, ZeroDivisionError):
+                    pass
+            
+            return None
+            
+        except Exception as e:
+            logger.debug(f"Ошибка расчета веса: {e}")
+            return None
+
+    def _calculate_weight_from_data(self, row: pd.Series) -> Optional[float]:
+        """Вычисляет вес поезда из данных маршрута"""
+        try:
+            # Сначала пробуем прямые колонки с весом
+            weight_columns = ['БРУТТО', 'Вес БРУТТО', 'Вес поезда БРУТТО', 'Брутто']
+            
+            for col in weight_columns:
+                if col in row.index:
+                    brutto = row.get(col)
+                    if pd.notna(brutto) and brutto != '-' and brutto != '':
+                        try:
+                            weight_val = float(brutto)
+                            if weight_val > 0:
+                                return weight_val
+                        except (ValueError, TypeError):
+                            continue
+            
+            # Если прямых данных нет, рассчитываем из Ткм брутто / км
+            tkm_brutto = row.get('Ткм брутто')
+            km = row.get('Км')
+            
+            if pd.notna(tkm_brutto) and pd.notna(km) and km != 0:
+                try:
+                    weight_calc = float(tkm_brutto) / float(km)
+                    if weight_calc > 0:
+                        return weight_calc
+                except (ValueError, TypeError, ZeroDivisionError):
+                    pass
+            
+            return None
+            
+        except Exception as e:
+            logger.debug(f"Ошибка расчета веса: {e}")
             return None

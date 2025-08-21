@@ -299,7 +299,7 @@ class NormStorage:
             return lambda x: const_value
             
         elif len(points) == 2:
-            # Для двух точек решаем систему уравнений для гиперболы Y = A/X + B
+            # ИСПРАВИТЬ: Для двух точек решаем систему уравнений для гиперболы Y = A/X + B
             x1, y1 = sorted_points[0]
             x2, y2 = sorted_points[1]
             
@@ -319,7 +319,7 @@ class NormStorage:
                 A = (y1 - y2) * x1 * x2 / (x2 - x1)
                 B = (y2 * x2 - y1 * x1) / (x2 - x1)
                 
-                logger.debug(f"Создана гипербола: y = {A}/x + {B}")
+                logger.debug(f"Создана гипербола: y = {A:.3f}/x + {B:.3f}")
                 
                 def hyperbola_func(x):
                     if x <= 0:
@@ -335,7 +335,7 @@ class NormStorage:
                             fill_value='extrapolate', bounds_error=False)
         
         else:
-            # Для трех и более точек используем метод наименьших квадратов для гиперболы
+            # ДОБАВИТЬ: Для трех и более точек используем метод наименьших квадратов для гиперболы
             try:
                 from scipy.optimize import curve_fit
                 
@@ -347,7 +347,7 @@ class NormStorage:
                                 bounds=([-np.inf, -np.inf], [np.inf, np.inf]))
                 A_opt, B_opt = popt
                 
-                logger.debug(f"Создана оптимизированная гипербола: y = {A_opt}/x + {B_opt}")
+                logger.debug(f"Создана оптимизированная гипербола: y = {A_opt:.3f}/x + {B_opt:.3f}")
                 
                 def optimized_hyperbola(x):
                     if x <= 0:
@@ -358,26 +358,8 @@ class NormStorage:
                 
             except Exception as e:
                 logger.warning(f"Ошибка создания оптимизированной гиперболы: {e}")
-                # Fallback: используем первые две точки для расчета гиperbolы
-                x1, y1 = sorted_points[0]
-                x2, y2 = sorted_points[1]
-                
-                if abs(x2 - x1) > 1e-10:
-                    A = (y1 - y2) * x1 * x2 / (x2 - x1)
-                    B = (y2 * x2 - y1 * x1) / (x2 - x1)
-                    
-                    logger.debug(f"Создана fallback гипербола: y = {A}/x + {B}")
-                    
-                    def fallback_hyperbola(x):
-                        if x <= 0:
-                            return y_values[0]
-                        return A / x + B
-                        
-                    return fallback_hyperbola
-                else:
-                    # Если не получается, используем кубический сплайн
-                    logger.debug("Используется кубический сплайн")
-                    return CubicSpline(x_values, y_values, bc_type='natural')
+                # Fallback: используем первые две точки для расчета гиперболы
+                return self._create_interpolation_function(sorted_points[:2])
     
     def _norms_are_different(self, norm1: Dict, norm2: Dict) -> bool:
         """Сравнивает две нормы на предмет различий"""
