@@ -591,8 +591,8 @@ class InteractiveNormsAnalyzer:
                         name=f'Норма {norm_id} ({norm_type}, константа)',
                         line=dict(width=3, dash='dash'),  # Пунктир ТОЛЬКО для констант
                         hovertemplate=f'<b>Норма {norm_id} (константа)</b><br>' +
-                                     f'{x_axis_name}: %{{x:.1f}}<br>' +
-                                     f'Расход: {y_single:.1f} кВт·ч/10⁴ ткм<extra></extra>'
+                                    f'{x_axis_name}: %{{x:.1f}}<br>' +
+                                    f'Расход: {y_single:.1f} кВт·ч/10⁴ ткм<extra></extra>'
                     ),
                     row=1, col=1
                 )
@@ -668,42 +668,36 @@ class InteractiveNormsAnalyzer:
                     row=1, col=1
                 )
             
-            # Добавляем точки норм (ромбики)
-            additional_points = self._extract_additional_norm_points(routes_df, norm_id, norm_type)
-            if additional_points:
-                add_x, add_y = zip(*additional_points)
+            # Добавляем точки норм с информацией о маршрутах
+            additional_points_with_info = self._extract_additional_norm_points_with_route_info(routes_df, norm_id, norm_type)
+            if additional_points_with_info:
+                add_x = [point[0] for point in additional_points_with_info]
+                add_y = [point[1] for point in additional_points_with_info]
+                
+                # Создаем кастомный hover text для каждой точки
+                hover_texts = []
+                for x, y, routes in additional_points_with_info:
+                    hover_text = (
+                        f"<b>Из маршрута № {routes}</b><br>"
+                        f"{x_axis_name}: {x:.1f}<br>"
+                        f"Расход: {y:.1f} кВт·ч/10⁴ ткм"
+                    )
+                    hover_texts.append(hover_text)
+                
                 fig.add_trace(
                     go.Scatter(
                         x=add_x,
                         y=add_y,
                         mode='markers',
-                        name=f'Из маршрутов {norm_id} ({len(additional_points)})',
+                        name=f'Из маршрутов {norm_id} ({len(additional_points_with_info)})',
                         marker=dict(size=6, symbol='circle', opacity=0.7, color='orange'),
-                        hovertemplate=f'<b>Точка нормы {norm_id}</b><br>' +
-                                    f'{x_axis_name}: %{{x:.1f}}<br>' +
-                                    'Расход: %{y:.1f} кВт·ч/10⁴ ткм<extra></extra>'
-                    ),
-                    row=1, col=1
-            )
-            
-            # ДОБАВИТЬ: Дополнительные точки из маршрутов  
-            additional_points = self._extract_additional_norm_points(routes_df, norm_id, norm_type)
-            if additional_points:
-                add_x, add_y = zip(*additional_points)
-                fig.add_trace(
-                    go.Scatter(
-                        x=add_x,
-                        y=add_y,
-                        mode='markers',
-                        name=f'Из маршрутов {norm_id} ({len(additional_points)})',
-                        marker=dict(size=6, symbol='circle', opacity=0.7, color='orange'),
-                        hovertemplate=f'<b>Из маршрута (норма {norm_id})</b><br>' +
-                                    f'{x_axis_name}: %{{x:.1f}}<br>' +
-                                    'Уд. норма: %{y:.1f} кВт·ч/10⁴ ткм<extra></extra>'
+                        hovertemplate='%{text}<extra></extra>',
+                        text=hover_texts
                     ),
                     row=1, col=1
                 )
-                logger.info(f"✅ Добавлено {len(additional_points)} дополнительных точек для нормы {norm_id}")
+                
+                logger.info(f"✅ Добавлено {len(additional_points_with_info)} дополнительных точек с информацией о маршрутах для нормы {norm_id}")
             else:
                 logger.debug(f"Дополнительные точки для нормы {norm_id} не найдены")
         
@@ -1313,3 +1307,96 @@ class InteractiveNormsAnalyzer:
                 unique_points.append(point)
         
         return unique_points
+
+
+    def _extract_additional_norm_points_with_route_info(self, routes_df: pd.DataFrame, norm_id: str, norm_type: str) -> List[Tuple[float, float, str]]:
+        """Извлекает дополнительные точки норм из маршрутов с информацией о маршруте
+        
+        Args:
+            routes_df: DataFrame с данными маршрутов
+            norm_id: ID нормы
+            norm_type: Тип нормы ('Вес' или 'Нажатие')
+            
+        Returns:
+            List[Tuple[float, float, str]]: Список кортежей (x, y, route_numbers)
+            где x - нагрузка, y - удельная норма, route_numbers - номера маршрутов
+        """
+        points_with_info = []
+        logger.debug(f"Поиск дополнительных точек с информацией о маршруте для нормы {norm_id}, тип: {norm_type}")
+        
+        # Возможные названия колонок для удельной нормы
+        ud_norma_columns = [
+            'Уд. норма, норма на 1 час ман. раб.',
+            'Удельная норма',
+            'Уд норма',
+            'Норма на 1 час',
+            'УД. НОРМА'
+        ]
+        
+        # Находим реальную колонку удельной нормы
+        ud_norma_col = None
+        for col in ud_norma_columns:
+            if col in routes_df.columns:
+                ud_norma_col = col
+                break
+        
+        if not ud_norma_col:
+            logger.debug(f"Колонка удельной нормы не найдена среди: {ud_norma_columns}")
+            return points_with_info
+        
+        # Извлекаем точки для конкретной нормы с информацией о маршруте
+        for _, row in routes_df.iterrows():
+            try:
+                route_norm_id = row.get('Номер нормы')
+                if pd.notna(route_norm_id) and str(int(route_norm_id)) == norm_id:
+                    
+                    ud_norma = row.get(ud_norma_col)
+                    
+                    if pd.notna(ud_norma) and ud_norma != '' and ud_norma != '-':
+                        try:
+                            ud_norma_val = float(ud_norma)
+                            
+                            if ud_norma_val > 0:
+                                # Для норм по весу используем расчет веса
+                                if norm_type == 'Вес':
+                                    x_val = self._calculate_weight_from_data(row)
+                                else:
+                                    x_val = self._calculate_axle_load_from_data(row)
+                                
+                                if x_val and x_val > 0:
+                                    # Получаем номер маршрута
+                                    route_number = row.get('Номер маршрута', 'N/A')
+                                    points_with_info.append((x_val, ud_norma_val, str(route_number)))
+                                    
+                        except (ValueError, TypeError):
+                            continue
+                            
+            except Exception as e:
+                logger.debug(f"Ошибка обработки строки: {e}")
+                continue
+        
+        # Группируем близкие точки и объединяем номера маршрутов
+        if points_with_info:
+            unique_points = {}
+            for x, y, route in points_with_info:
+                key = (round(x, 2), round(y, 1))  # Округляем для группировки близких точек
+                if key not in unique_points:
+                    unique_points[key] = (x, y, [route])
+                else:
+                    existing_x, existing_y, existing_routes = unique_points[key]
+                    if route not in existing_routes:
+                        existing_routes.append(route)
+                    unique_points[key] = (existing_x, existing_y, existing_routes)
+            
+            # Преобразуем в финальный формат
+            points_with_info = []
+            for (x, y, routes) in unique_points.values():
+                # Сортируем номера маршрутов и объединяем через запятую
+                route_str = ', '.join(sorted(routes, key=lambda r: int(r) if r.isdigit() else float('inf')))
+                points_with_info.append((x, y, route_str))
+            
+            points_with_info.sort(key=lambda x: x[0])  # Сортируем по x
+            
+            logger.info(f"✅ Найдено {len(points_with_info)} дополнительных точек с информацией о маршрутах для нормы {norm_id}")
+        
+        return points_with_info

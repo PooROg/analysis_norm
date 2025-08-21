@@ -283,6 +283,8 @@ class NormStorage:
         if len(points) < 1:
             raise ValueError("Недостаточно точек для интерполяции")
         
+        logger.debug(f"Создание функции интерполяции для {len(points)} точек: {points}")
+
         # Сортируем точки по X
         sorted_points = sorted(points, key=lambda x: x[0])
         x_values = [p[0] for p in sorted_points]
