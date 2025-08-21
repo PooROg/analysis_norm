@@ -227,22 +227,10 @@ class NormStorage:
         
         for norm_id, norm_data in self.norms_data.items():
             try:
-                # Проверяем обязательные поля
-                if not norm_data.get('points'):
-                    validation_results['invalid'].append(f"Норма {norm_id}: отсутствуют точки")
-                    continue
+                points = norm_data.get('points', [])
                 
-                points = norm_data['points']
-                if len(points) < 2:
-                    validation_results['invalid'].append(f"Норма {norm_id}: менее 2 точек")
-                    continue
-                
-                # Проверяем точки
-                x_values = [p[0] for p in points]
-                y_values = [p[1] for p in points]
-                
-                if len(set(x_values)) != len(x_values):
-                    validation_results['invalid'].append(f"Норма {norm_id}: дублирующиеся значения нагрузки")
+                if len(points) < 1:  # ИЗМЕНЕНО: теперь достаточно 1 точки
+                    validation_results['invalid'].append(f"Норма {norm_id}: нет точек")
                     continue
                 
                 if any(x <= 0 or y <= 0 for x, y in points):
@@ -260,13 +248,15 @@ class NormStorage:
                 # Предупреждения
                 if len(points) > 20:
                     validation_results['warnings'].append(f"Норма {norm_id}: много точек ({len(points)})")
+                elif len(points) == 1:
+                    validation_results['warnings'].append(f"Норма {norm_id}: только одна точка (константа)")
                 
             except Exception as e:
                 validation_results['invalid'].append(f"Норма {norm_id}: ошибка валидации - {str(e)}")
         
         logger.info(f"Валидация завершена: валидных {len(validation_results['valid'])}, "
-                   f"невалидных {len(validation_results['invalid'])}, "
-                   f"предупреждений {len(validation_results['warnings'])}")
+                f"невалидных {len(validation_results['invalid'])}, "
+                f"предупреждений {len(validation_results['warnings'])}")
         
         return validation_results
     
@@ -289,8 +279,8 @@ class NormStorage:
                     logger.error(f"Ошибка создания функции для нормы {norm_id}: {e}")
     
     def _create_interpolation_function(self, points: List[Tuple[float, float]]):
-        """Создает функцию интерполяции для точек нормы"""
-        if len(points) < 2:
+        """Создает функцию интерполяции для точек нормы - гипербола Y = A/X + B или константа"""
+        if len(points) < 1:
             raise ValueError("Недостаточно точек для интерполяции")
         
         # Сортируем точки по X
@@ -298,27 +288,96 @@ class NormStorage:
         x_values = [p[0] for p in sorted_points]
         y_values = [p[1] for p in sorted_points]
         
-        # Проверяем на дубли X
-        if len(set(x_values)) != len(x_values):
-            raise ValueError("Дублирующиеся значения X")
+        # Проверяем на нулевые X (деление на ноль)
+        if any(x <= 0 for x in x_values):
+            raise ValueError("Значения X должны быть положительными для гиперболы")
         
-        if len(points) == 2:
-            # Линейная интерполяция
-            return interp1d(x_values, y_values, kind='linear', 
-                          fill_value='extrapolate', bounds_error=False)
-        else:
-            # Кубическая сплайн-интерполяция
+        if len(points) == 1:
+            # Для одной точки возвращаем константу
+            const_value = y_values[0]
+            logger.debug(f"Создана константная функция: y = {const_value}")
+            return lambda x: const_value
+            
+        elif len(points) == 2:
+            # Для двух точек решаем систему уравнений для гиперболы Y = A/X + B
+            x1, y1 = sorted_points[0]
+            x2, y2 = sorted_points[1]
+            
             try:
-                return CubicSpline(x_values, y_values, bc_type='natural')
-            except:
-                # Fallback к квадратичной интерполяции
-                try:
-                    return interp1d(x_values, y_values, kind='quadratic', 
-                                  fill_value='extrapolate', bounds_error=False)
-                except:
-                    # Fallback к линейной интерполяции
-                    return interp1d(x_values, y_values, kind='linear', 
-                                  fill_value='extrapolate', bounds_error=False)
+                # Решаем систему:
+                # y1 = A/x1 + B
+                # y2 = A/x2 + B
+                # Откуда: A = (y1 - y2) * x1 * x2 / (x2 - x1)
+                #         B = (y2 * x2 - y1 * x1) / (x2 - x1)
+                
+                if abs(x2 - x1) < 1e-10:
+                    # Если X практически одинаковые, используем среднее значение Y
+                    avg_y = (y1 + y2) / 2
+                    logger.debug(f"Близкие X, создана константная функция: y = {avg_y}")
+                    return lambda x: avg_y
+                
+                A = (y1 - y2) * x1 * x2 / (x2 - x1)
+                B = (y2 * x2 - y1 * x1) / (x2 - x1)
+                
+                logger.debug(f"Создана гипербола: y = {A}/x + {B}")
+                
+                def hyperbola_func(x):
+                    if x <= 0:
+                        return y_values[0]  # Возвращаем первое значение для неположительных X
+                    return A / x + B
+                
+                return hyperbola_func
+                
+            except (ZeroDivisionError, ValueError) as e:
+                logger.warning(f"Ошибка создания гиперболы: {e}, используем линейную интерполяцию")
+                # Fallback к линейной интерполяции
+                return interp1d(x_values, y_values, kind='linear', 
+                            fill_value='extrapolate', bounds_error=False)
+        
+        else:
+            # Для трех и более точек используем метод наименьших квадратов для гиперболы
+            try:
+                from scipy.optimize import curve_fit
+                
+                def hyperbola_model(x, A, B):
+                    return A / x + B
+                
+                # Подгоняем гиперболу к точкам
+                popt, _ = curve_fit(hyperbola_model, x_values, y_values, 
+                                bounds=([-np.inf, -np.inf], [np.inf, np.inf]))
+                A_opt, B_opt = popt
+                
+                logger.debug(f"Создана оптимизированная гипербола: y = {A_opt}/x + {B_opt}")
+                
+                def optimized_hyperbola(x):
+                    if x <= 0:
+                        return y_values[0]
+                    return A_opt / x + B_opt
+                
+                return optimized_hyperbola
+                
+            except Exception as e:
+                logger.warning(f"Ошибка создания оптимизированной гиперболы: {e}")
+                # Fallback: используем первые две точки для расчета гиperbolы
+                x1, y1 = sorted_points[0]
+                x2, y2 = sorted_points[1]
+                
+                if abs(x2 - x1) > 1e-10:
+                    A = (y1 - y2) * x1 * x2 / (x2 - x1)
+                    B = (y2 * x2 - y1 * x1) / (x2 - x1)
+                    
+                    logger.debug(f"Создана fallback гипербола: y = {A}/x + {B}")
+                    
+                    def fallback_hyperbola(x):
+                        if x <= 0:
+                            return y_values[0]
+                        return A / x + B
+                        
+                    return fallback_hyperbola
+                else:
+                    # Если не получается, используем кубический сплайн
+                    logger.debug("Используется кубический сплайн")
+                    return CubicSpline(x_values, y_values, bc_type='natural')
     
     def _norms_are_different(self, norm1: Dict, norm2: Dict) -> bool:
         """Сравнивает две нормы на предмет различий"""

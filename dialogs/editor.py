@@ -29,8 +29,8 @@ class NormData:
     
     def validate(self) -> ValidationResult:
         """Validate norm data."""
-        if len(self.points) < 2:
-            return False, "Минимум 2 точки для нормы"
+        if len(self.points) < 1:  # ИЗМЕНЕНО: минимум 1 точка вместо 2
+            return False, "Минимум 1 точка для нормы"
         
         # Check for duplicate X values
         x_values = [p[0] for p in self.points]
@@ -458,8 +458,8 @@ class NormEditorDialog:
                 except ValueError:
                     continue
         
-        if len(points) < 2:
-            messagebox.showinfo("Информация", "Недостаточно корректных точек для сортировки")
+        if len(points) < 1:  # ИЗМЕНЕНО: было < 2
+            messagebox.showwarning("Предупреждение", "Нужно минимум 1 корректная точка")
             return
         
         # Sort by load value
@@ -500,8 +500,13 @@ class NormEditorDialog:
                 except ValueError:
                     continue
         
-        if len(points) < 2:
-            messagebox.showwarning("Предупреждение", "Нужно минимум 2 корректные точки для интерполяции")
+        # ИЗМЕНЕНО: теперь достаточно 1 точки
+        if len(points) < 1:
+            messagebox.showwarning("Предупреждение", "Нужно минимум 1 корректная точка")
+            return
+        
+        if len(points) == 1:
+            messagebox.showinfo("Информация", "Создана константная норма (одна точка)")
             return
         
         # Sort points
@@ -514,18 +519,43 @@ class NormEditorDialog:
             
             # Create interpolation function
             if len(points) == 2:
-                interp_func = interp1d(x_vals, y_vals, kind='linear')
+                # ИЗМЕНЕНО: Создаем гиперболу для двух точек
+                x1, y1 = points[0]
+                x2, y2 = points[1]
+                
+                if abs(x2 - x1) > 1e-10:
+                    # Решаем систему для гиперболы Y = A/X + B
+                    A = (y1 - y2) * x1 * x2 / (x2 - x1)
+                    B = (y2 * x2 - y1 * x1) / (x2 - x1)
+                    
+                    def hyperbola(x):
+                        return A / x + B
+                    
+                    # Generate new points for hyperbola
+                    x_min, x_max = min(x_vals), max(x_vals)
+                    x_range = x_max - x_min
+                    x_start = max(x_min - x_range * 0.2, x_min * 0.5)
+                    x_end = x_max + x_range * 0.2
+                    
+                    num_points = min(self.MAX_POINTS_PER_NORM, 8)
+                    x_new = np.linspace(x_start, x_end, num_points)
+                    y_new = [hyperbola(x) for x in x_new]
+                else:
+                    x_new = x_vals
+                    y_new = y_vals
+                    
             else:
+                # Для трех и более точек используем обычную интерполяцию
                 try:
                     interp_func = CubicSpline(x_vals, y_vals, bc_type='natural')
                 except:
                     interp_func = interp1d(x_vals, y_vals, kind='quadratic')
-            
-            # Generate new points
-            x_min, x_max = min(x_vals), max(x_vals)
-            num_points = min(self.MAX_POINTS_PER_NORM, len(points) + 5)
-            x_new = np.linspace(x_min, x_max, num_points)
-            y_new = interp_func(x_new)
+                
+                # Generate new points
+                x_min, x_max = min(x_vals), max(x_vals)
+                num_points = min(self.MAX_POINTS_PER_NORM, len(points) + 5)
+                x_new = np.linspace(x_min, x_max, num_points)
+                y_new = interp_func(x_new)
             
             # Clear and populate with interpolated points
             self._clear_norm_points(norm_id)
@@ -542,7 +572,7 @@ class NormEditorDialog:
             
         except Exception as e:
             logger.error(f"Interpolation failed for norm {norm_id}: {e}")
-            messagebox.showerror("Ошибка", f"Не удалось выполнить интерполяцию:\n{str(e)}")
+            messagebox.showerror("Ошибка", f"Не удалось выполнить интерполяцию:\\n{str(e)}")
     
     def _validate_norm(self, norm_id: int) -> bool:
         """Validate complete norm."""
@@ -595,7 +625,8 @@ class NormEditorDialog:
         for norm_id in self.norm_editors:
             norm_data = self._extract_norm_data(norm_id)
             
-            if len(norm_data.points) >= 2:
+            # ИЗМЕНЕНО: теперь достаточно 1 точки
+            if len(norm_data.points) >= 1:
                 is_valid, _ = self.validator.validate(norm_data)
                 
                 if is_valid:

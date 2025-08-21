@@ -178,32 +178,33 @@ class InteractiveNormsAnalyzer:
         return len(section_routes)
     
     def get_norm_routes_count_for_section(self, section_name: str, norm_id: str, single_section_only: bool = False) -> int:
-        """Возвращает количество маршрутов для конкретной нормы в участке"""
-        if self.routes_df is None or self.routes_df.empty:
-            return 0
-        
-        # Фильтруем данные по участку и норме
-        section_norm_routes = self.routes_df[
-            (self.routes_df['Наименование участка'] == section_name) &
-            (self.routes_df['Номер нормы'].astype(str) == str(norm_id))
-        ].copy()
-        
-        if section_norm_routes.empty:
-            return 0
-        
-        # Если нужны только маршруты с одним участком
-        if single_section_only:
-            # Подсчитываем количество участков для каждого маршрута
-            route_section_counts = self.routes_df.groupby(['Номер маршрута', 'Дата маршрута']).size()
-            single_section_routes = route_section_counts[route_section_counts == 1].index
+        """Получает количество маршрутов для нормы на участке"""
+        try:
+            if self.routes_df is None or self.routes_df.empty:
+                return 0
             
-            # Фильтруем только маршруты с одним участком
-            section_norm_routes = section_norm_routes.set_index(['Номер маршрута', 'Дата маршрута'])
-            section_norm_routes = section_norm_routes.loc[section_norm_routes.index.intersection(single_section_routes)]
+            # Фильтруем данные по участку
+            section_routes = self.routes_df[self.routes_df['Наименование участка'] == section_name].copy()
             
-            return len(section_norm_routes)
-        
-        return len(section_norm_routes)
+            if section_routes.empty:
+                return 0
+            
+            # Если нужны только маршруты с одним участком
+            if single_section_only:
+                route_section_counts = self.routes_df.groupby(['Номер маршрута', 'Дата маршрута']).size()
+                single_section_routes = route_section_counts[route_section_counts == 1].index
+                
+                section_routes = section_routes.set_index(['Номер маршрута', 'Дата маршрута'])
+                section_routes = section_routes.loc[section_routes.index.intersection(single_section_routes)]
+                section_routes = section_routes.reset_index()
+            
+            # Фильтруем по номеру нормы
+            norm_routes = section_routes[section_routes['Номер нормы'] == int(norm_id)]
+            return len(norm_routes)
+            
+        except Exception as e:
+            logger.error(f"Ошибка получения количества маршрутов для нормы {norm_id}: {e}")
+            return 0
     
     def get_norm_info(self, norm_id: str) -> Optional[Dict]:
         """Возвращает информацию о норме"""
@@ -354,23 +355,17 @@ class InteractiveNormsAnalyzer:
         return routes_df
     
     def _analyze_section_data(self, section_name: str, routes_df: pd.DataFrame, 
-                             specific_norm_id: Optional[str] = None) -> Tuple[pd.DataFrame, Dict]:
+                            specific_norm_id: Optional[str] = None) -> Tuple[pd.DataFrame, Dict]:
         """Анализирует данные участка с использованием норм из хранилища"""
-        logger.debug(f"Анализ данных участка {section_name}")
+        logger.debug(f"Анализ участка {section_name}, маршрутов: {len(routes_df)}")
         
-        # Добавляем колонки для анализа
-        routes_df = routes_df.copy()
-        routes_df['Норма интерполированная'] = 0.0
-        routes_df['Отклонение, %'] = 0.0
-        routes_df['Статус'] = 'Не определен'
-        
-        # Получаем уникальные номера норм в данных
+        # Получаем уникальные номера норм
         if specific_norm_id:
             norm_numbers = [specific_norm_id]
         else:
             norm_numbers = routes_df['Номер нормы'].dropna().unique()
         
-        logger.debug(f"Анализируемые номера норм: {norm_numbers}")
+        logger.debug(f"Найдены номера норм: {list(norm_numbers)}")
         
         # Создаем функции интерполяции для найденных норм
         norm_functions = {}
@@ -389,11 +384,14 @@ class InteractiveNormsAnalyzer:
                                     min(p[0] for p in norm_data['points']),
                                     max(p[0] for p in norm_data['points'])
                                 ),
-                                'data': norm_data
+                                'data': norm_data,
+                                'norm_type': norm_data.get('norm_type', 'Нажатие')
                             }
-                            logger.debug(f"Создана функция для нормы {norm_number_str}")
+                            logger.debug(f"Создана функция для нормы {norm_number_str}, тип: {norm_data.get('norm_type', 'Нажатие')}")
                     except Exception as e:
                         logger.error(f"Ошибка создания функции для нормы {norm_number_str}: {e}")
+                else:
+                    logger.warning(f"Норма {norm_number_str} не найдена в хранилище или не содержит точек")
         
         if not norm_functions:
             logger.warning(f"Не найдено функций норм для участка {section_name}")
@@ -407,13 +405,25 @@ class InteractiveNormsAnalyzer:
                 
                 if norm_number_str in norm_functions:
                     try:
-                        # Вычисляем нажатие на ось из данных route_processor.py
-                        axle_load = self._calculate_axle_load_from_data(row)
+                        # Определяем тип нормы из функций
+                        norm_type = norm_functions[norm_number_str]['norm_type']
                         
-                        if axle_load and axle_load > 0:
+                        # Выбираем параметр для интерполяции в зависимости от типа нормы
+                        if norm_type == 'Вес':
+                            # Для норм по весу используем БРУТТО
+                            parameter_value = self._calculate_weight_from_data(row)
+                            parameter_name = 'вес поезда (БРУТТО)'
+                        else:
+                            # Для норм по нажатию используем нажатие на ось
+                            parameter_value = self._calculate_axle_load_from_data(row)
+                            parameter_name = 'нажатие на ось'
+                        
+                        if parameter_value and parameter_value > 0:
                             norm_func = norm_functions[norm_number_str]['function']
-                            norm_value = float(norm_func(axle_load))
+                            norm_value = float(norm_func(parameter_value))
                             routes_df.loc[i, 'Норма интерполированная'] = norm_value
+                            routes_df.loc[i, 'Параметр нормирования'] = parameter_name
+                            routes_df.loc[i, 'Значение параметра'] = parameter_value
                             
                             # Используем "Факт уд" если доступен, иначе обычный расход
                             actual_value = row.get('Факт уд')
@@ -481,12 +491,14 @@ class InteractiveNormsAnalyzer:
             return None
     
     def _create_interactive_plot(self, section_name: str, routes_df: pd.DataFrame, 
-                               norm_functions: Dict, specific_norm_id: Optional[str] = None,
-                               single_section_only: bool = False) -> go.Figure:
+                            norm_functions: Dict, specific_norm_id: Optional[str] = None,
+                            single_section_only: bool = False) -> go.Figure:
         """Создает интерактивный график для участка"""
         title_suffix = f" (норма {specific_norm_id})" if specific_norm_id else ""
         filter_suffix = " [только один участок]" if single_section_only else ""
         logger.debug(f"Создание графика для участка {section_name}{title_suffix}{filter_suffix}")
+        logger.debug(f"Колонки в routes_df: {list(routes_df.columns)}")
+        logger.debug(f"Первые несколько строк routes_df: {routes_df.head(2).to_dict()}")
         
         fig = make_subplots(
             rows=2, cols=1,
@@ -499,6 +511,12 @@ class InteractiveNormsAnalyzer:
             )
         )
         
+        # Определяем, какие типы норм используются
+        norm_types_used = set()
+        for norm_id, norm_data in norm_functions.items():
+            norm_type = norm_data.get('norm_type', 'Нажатие')
+            norm_types_used.add(norm_type)
+        
         # Отрисовка кривых норм на верхнем графике
         for norm_id, norm_data in norm_functions.items():
             # Пропускаем норму если указана конкретная и это не она
@@ -509,107 +527,288 @@ class InteractiveNormsAnalyzer:
             x_vals = [p[0] for p in points]
             y_vals = [p[1] for p in points]
             
-            # Создаем интерполированную кривую
-            x_interp = np.linspace(min(x_vals), max(x_vals), 100)
-            norm_func = norm_data['function']
-            y_interp = norm_func(x_interp)
+            # Определяем тип нормы
+            norm_type = norm_data.get('norm_type', 'Нажатие')
             
-            fig.add_trace(
-                go.Scatter(
-                    x=x_interp,
-                    y=y_interp,
-                    mode='lines',
-                    name=f'Норма №{norm_id}',
-                    line=dict(width=2),
-                    hovertemplate='Нажатие: %{x:.2f} т/ось<br>Норма: %{y:.1f} кВт·ч/10⁴ ткм'
-                ), row=1, col=1
-            )
+            # Определяем название оси X в зависимости от типа нормы
+            x_axis_name = "Вес поезда БРУТТО, т" if norm_type == 'Вес' else "Нажатие на ось, т/ось"
             
-            # Добавляем опорные точки
+            if len(points) == 1:
+                # Для одной точки рисуем горизонтальную линию
+                x_single, y_single = points[0]
+                
+                # Создаем диапазон для отображения константы на основе данных маршрутов
+                # Получаем диапазон X из фактических данных маршрутов
+                x_data_values = []
+                for _, row in routes_df.iterrows():
+                    norm_number = row.get('Номер нормы')
+                    if pd.notna(norm_number) and str(int(norm_number)) == norm_id:
+                        if norm_type == 'Вес':
+                            x_val = self._calculate_weight_from_data(row)
+                        else:
+                            x_val = self._calculate_axle_load_from_data(row)
+                        if x_val and x_val > 0:
+                            x_data_values.append(x_val)
+                
+                if x_data_values:
+                    # Используем диапазон из данных
+                    x_min_data, x_max_data = min(x_data_values), max(x_data_values)
+                    x_range_data = x_max_data - x_min_data
+                    x_start = max(x_min_data - x_range_data * 0.2, x_min_data * 0.8)
+                    x_end = x_max_data + x_range_data * 0.2
+                else:
+                    # Fallback диапазон вокруг точки нормы
+                    x_start = max(x_single * 0.5, x_single - 100)
+                    x_end = x_single * 1.5 + 100
+                
+                x_const = np.linspace(x_start, x_end, 100)
+                y_const = np.full_like(x_const, y_single)
+                
+                fig.add_trace(
+                    go.Scatter(
+                        x=x_const,
+                        y=y_const,
+                        mode='lines',
+                        name=f'Норма {norm_id} ({norm_type}, константа)',
+                        line=dict(width=3, dash='dash'),
+                        hovertemplate=f'<b>Норма {norm_id} (константа)</b><br>' +
+                                     f'{x_axis_name}: %{{x:.1f}}<br>' +
+                                     f'Расход: {y_single:.1f} кВт·ч/10⁴ ткм<extra></extra>'
+                    ),
+                    row=1, col=1
+                )
+                
+            else:
+                # Для двух и более точек строим гиперболу
+                x_min, x_max = min(x_vals), max(x_vals)
+                
+                # Расширяем диапазон для лучшего отображения гиперболы
+                x_range = x_max - x_min
+                x_start = max(x_min - x_range * 0.2, x_min * 0.5)
+                x_end = x_max + x_range * 0.2
+                
+                # Создаем плотную сетку точек для гиперболы
+                x_interp = np.linspace(x_start, x_end, 200)
+                norm_func = norm_data['function']
+                
+                try:
+                    y_interp = []
+                    for x in x_interp:
+                        try:
+                            y_val = norm_func(x)
+                            # Ограничиваем экстремальные значения
+                            if y_val > 0 and y_val < max(y_vals) * 5:
+                                y_interp.append(y_val)
+                            else:
+                                y_interp.append(np.nan)
+                        except:
+                            y_interp.append(np.nan)
+                    y_interp = np.array(y_interp)
+                    
+                    # Убираем NaN значения
+                    valid_mask = ~np.isnan(y_interp)
+                    x_interp_clean = x_interp[valid_mask]
+                    y_interp_clean = y_interp[valid_mask]
+                    
+                except:
+                    # Fallback для проблемных функций
+                    x_interp_clean = x_vals
+                    y_interp_clean = y_vals
+                
+                # Название кривой в зависимости от количества точек
+                if len(points) == 2:
+                    curve_name = f'Норма {norm_id} ({norm_type}, гипербола)'
+                else:
+                    curve_name = f'Норма {norm_id} ({norm_type}, {len(points)} точек)'
+                
+                fig.add_trace(
+                    go.Scatter(
+                        x=x_interp_clean,
+                        y=y_interp_clean,
+                        mode='lines',
+                        name=curve_name,
+                        line=dict(width=2),
+                        hovertemplate=f'<b>Норма {norm_id}</b><br>' +
+                                    f'{x_axis_name}: %{{x:.1f}}<br>' +
+                                    'Расход: %{y:.1f} кВт·ч/10⁴ ткм<extra></extra>'
+                    ),
+                    row=1, col=1
+                )
+            
+            # Добавляем точки норм
             fig.add_trace(
                 go.Scatter(
                     x=x_vals,
                     y=y_vals,
                     mode='markers',
-                    marker=dict(symbol='square', size=8, color='black'),
-                    name=f'Опорные точки нормы №{norm_id}',
-                    hovertemplate='Опорная точка<br>Нажатие: %{x:.2f} т/ось<br>Норма: %{y:.1f} кВт·ч/10⁴ ткм'
-                ), row=1, col=1
+                    name=f'Точки нормы {norm_id}',
+                    marker=dict(size=8, symbol='diamond'),
+                    hovertemplate=f'<b>Точка нормы {norm_id}</b><br>' +
+                                f'{x_axis_name}: %{{x:.1f}}<br>' +
+                                'Расход: %{y:.1f} кВт·ч/10⁴ ткм<extra></extra>'
+                ),
+                row=1, col=1
             )
         
-        # Добавляем фактические точки маршрутов
-        valid_routes = routes_df[routes_df['Статус'] != 'Не определен'].copy()
-        
-        # Определяем цвета для статусов
+        # Цвета для разных статусов
         status_colors = {
-            'Экономия сильная': '#006400',      # Темно-зеленый
-            'Экономия средняя': '#228B22',      # Зеленый
-            'Экономия слабая': '#32CD32',       # Светло-зеленый
-            'Норма': '#FFD700',                 # Золотой
-            'Перерасход слабый': '#FF8C00',     # Оранжевый
-            'Перерасход средний': '#FF4500',    # Красно-оранжевый
-            'Перерасход сильный': '#DC143C'     # Малиновый
+            'Экономия сильная': 'darkgreen',
+            'Экономия средняя': 'green', 
+            'Экономия слабая': 'lightgreen',
+            'Норма': 'blue',
+            'Перерасход слабый': 'orange',
+            'Перерасход средний': 'darkorange',
+            'Перерасход сильный': 'red'
         }
         
-        for status in status_colors.keys():
-            status_routes = valid_routes[valid_routes['Статус'] == status]
-            if not status_routes.empty:
-                x_values = []
-                y_values = []
-                hover_texts = []
-                
-                for _, route in status_routes.iterrows():
-                    axle_load = self._calculate_axle_load_from_data(route)
+        # Отрисовка точек маршрутов с правильным группированием
+        for status, color in status_colors.items():
+            status_data = routes_df[routes_df['Статус'] == status]
+            
+            if not status_data.empty:
+                # Группируем по типам норм
+                for norm_type in norm_types_used:
+                    x_vals_routes = []
+                    y_vals_routes = []
+                    hover_texts = []
                     
-                    # Определяем значение расхода для отображения
-                    consumption_value = route.get('Факт уд')
-                    if pd.isna(consumption_value) or consumption_value is None:
-                        consumption_value = route.get('Расход фактический')
+                    for _, row in status_data.iterrows():
+                        norm_number = row.get('Номер нормы')
+                        if pd.notna(norm_number):
+                            norm_number_str = str(int(norm_number))
+                            if norm_number_str in norm_functions:
+                                current_norm_type = norm_functions[norm_number_str].get('norm_type', 'Нажатие')
+                                if current_norm_type == norm_type:
+                                    # Выбираем правильный параметр
+                                    if norm_type == 'Вес':
+                                        x_val = self._calculate_weight_from_data(row)
+                                        x_label = "Вес БРУТТО"
+                                    else:
+                                        x_val = self._calculate_axle_load_from_data(row)
+                                        x_label = "Нажатие на ось"
+                                    
+                                    if x_val and x_val > 0:
+                                        actual_value = row.get('Факт уд') or row.get('Расход фактический')
+                                        if actual_value:
+                                            x_vals_routes.append(x_val)
+                                            y_vals_routes.append(actual_value)
+                                            
+                                            # Получаем информацию о маршруте
+                                            route_info = []
+                                            
+                                            # Пытаемся получить разную информацию о маршруте
+                                            if 'Номер маршрута' in row and pd.notna(row['Номер маршрута']):
+                                                route_info.append(f"Маршрут №{row['Номер маршрута']}")
+                                            
+                                            if 'Дата маршрута' in row and pd.notna(row['Дата маршрута']):
+                                                route_info.append(f"Дата: {row['Дата маршрута']}")
+                                            
+                                            if 'Наименование участка' in row and pd.notna(row['Наименование участка']):
+                                                route_info.append(f"Участок: {row['Наименование участка']}")
+                                            elif 'Участок' in row and pd.notna(row['Участок']):
+                                                route_info.append(f"Участок: {row['Участок']}")
+                                            
+                                            if 'Серия локомотива' in row and pd.notna(row['Серия локомотива']):
+                                                loco_info = f"Локомотив: {row['Серия локомотива']}"
+                                                if 'Номер локомотива' in row and pd.notna(row['Номер локомотива']):
+                                                    loco_info += f" №{row['Номер локомотива']}"
+                                                route_info.append(loco_info)
+                                            elif 'Серия ТПС' in row and pd.notna(row['Серия ТПС']):
+                                                loco_info = f"ТПС: {row['Серия ТПС']}"
+                                                if 'Номер ТПС' in row and pd.notna(row['Номер ТПС']):
+                                                    loco_info += f" №{row['Номер ТПС']}"
+                                                route_info.append(loco_info)
+                                            
+                                            route_title = " | ".join(route_info) if route_info else "Маршрут"
+                                            
+                                            hover_text = (
+                                                f"<b>{route_title}</b><br>"
+                                                f"{x_label}: {x_val:.1f}<br>"
+                                                f"Факт: {actual_value:.1f}<br>"
+                                                f"Норма: {row.get('Норма интерполированная', 'N/A'):.1f}<br>"
+                                                f"Отклонение: {row.get('Отклонение, %', 'N/A'):.1f}%<br>"
+                                                f"Номер нормы: {norm_number_str}"
+                                            )
+                                            hover_texts.append(hover_text)
                     
-                    if axle_load and consumption_value:
-                        x_values.append(axle_load)
-                        y_values.append(consumption_value)
-                        hover_texts.append(self._create_hover_text(route))
-                
-                if x_values:
-                    fig.add_trace(
-                        go.Scatter(
-                            x=x_values,
-                            y=y_values,
-                            mode='markers',
-                            name=f'{status} ({len(status_routes)})',
-                            marker=dict(
-                                color=status_colors[status],
-                                size=8,
-                                opacity=0.8,
-                                line=dict(color='black', width=0.5)
+                    if x_vals_routes:
+                        fig.add_trace(
+                            go.Scatter(
+                                x=x_vals_routes,
+                                y=y_vals_routes,
+                                mode='markers',
+                                name=f'{status} ({norm_type})',
+                                marker=dict(color=color, size=6, opacity=0.7),
+                                hovertemplate='%{text}<extra></extra>',
+                                text=hover_texts
                             ),
-                            hovertemplate='%{text}',
-                            text=hover_texts
-                        ), row=1, col=1
-                    )
+                            row=1, col=1
+                        )
         
-        # Добавляем точки отклонений на нижний график
-        self._add_deviation_points(fig, valid_routes)
+        # Отклонения на нижнем графике
+        for status, color in status_colors.items():
+            status_data = routes_df[routes_df['Статус'] == status]
+            
+            if not status_data.empty:
+                for norm_type in norm_types_used:
+                    x_vals_dev = []
+                    y_vals_dev = []
+                    
+                    for _, row in status_data.iterrows():
+                        norm_number = row.get('Номер нормы')
+                        if pd.notna(norm_number):
+                            norm_number_str = str(int(norm_number))
+                            if norm_number_str in norm_functions:
+                                current_norm_type = norm_functions[norm_number_str].get('norm_type', 'Нажатие')
+                                if current_norm_type == norm_type:
+                                    if norm_type == 'Вес':
+                                        x_val = self._calculate_weight_from_data(row)
+                                    else:
+                                        x_val = self._calculate_axle_load_from_data(row)
+                                    
+                                    deviation = row.get('Отклонение, %')
+                                    if x_val and x_val > 0 and pd.notna(deviation):
+                                        x_vals_dev.append(x_val)
+                                        y_vals_dev.append(deviation)
+                    
+                    if x_vals_dev:
+                        fig.add_trace(
+                            go.Scatter(
+                                x=x_vals_dev,
+                                y=y_vals_dev,
+                                mode='markers',
+                                name=f'{status} отклонение ({norm_type})',
+                                marker=dict(color=color, size=4, opacity=0.7),
+                                showlegend=False
+                            ),
+                            row=2, col=1
+                        )
         
-        # Добавляем линии границ на нижний график
-        self._add_boundary_lines(fig, valid_routes)
+        # Определяем подписи осей
+        mixed_types = len(norm_types_used) > 1
         
-        # Настройка осей и layout
-        fig.update_xaxes(title_text="Нажатие на ось, т/ось", row=1, col=1)
-        fig.update_yaxes(title_text="Удельный расход, кВт·ч/10⁴ ткм брутто", row=1, col=1)
-        fig.update_xaxes(title_text="Нажатие на ось, т/ось", row=2, col=1)
-        fig.update_yaxes(title_text="Отклонение от нормы, %", row=2, col=1)
+        if mixed_types:
+            x_axis_title = "Параметр нормирования (т/ось или т БРУТТО)"
+        elif 'Вес' in norm_types_used:
+            x_axis_title = "Вес поезда БРУТТО, т"
+        else:
+            x_axis_title = "Нажатие на ось, т/ось"
+        
+        fig.update_xaxes(title_text=x_axis_title, row=1, col=1)
+        fig.update_yaxes(title_text="Удельный расход, кВт·ч/10⁴ ткм", row=1, col=1)
+        fig.update_xaxes(title_text=x_axis_title, row=2, col=1)
+        fig.update_yaxes(title_text="Отклонение, %", row=2, col=1)
+        
+        # Добавляем линию нуля на график отклонений
+        fig.add_hline(y=0, line_dash="dash", line_color="gray", row=2, col=1)
         
         fig.update_layout(
-            height=1000,
-            showlegend=True,
+            height=800,
             hovermode='closest',
-            template='plotly_white',
             legend=dict(
                 orientation="v",
-                yanchor="middle",
-                y=0.5,
+                yanchor="top",
+                y=1,
                 xanchor="left",
                 x=1.02
             )
@@ -840,3 +1039,46 @@ class InteractiveNormsAnalyzer:
             return 0
         
         return len(self.routes_df[self.routes_df['Номер нормы'].astype(str) == str(norm_id)])
+    
+    def _get_norm_type_from_storage(self, norm_id: str) -> str:
+        """Определяет тип нормы из хранилища норм"""
+        try:
+            norm_data = self.norm_storage.get_norm(norm_id)
+            if norm_data:
+                return norm_data.get('norm_type', 'Нажатие')
+            return 'Нажатие'
+        except Exception as e:
+            logger.debug(f"Не удалось определить тип нормы {norm_id}: {e}")
+            return 'Нажатие'
+
+    def _calculate_weight_from_data(self, row: pd.Series) -> Optional[float]:
+        """Вычисляет вес поезда БРУТТО из данных"""
+        try:
+            # Пытаемся получить БРУТТО напрямую
+            brutto = row.get('БРУТТО')
+            if pd.notna(brutto) and brutto != "-" and isinstance(brutto, (int, float)):
+                return float(brutto)
+            
+            # Альтернативный расчет из Ткм брутто и км
+            tkm_brutto = row.get('Ткм брутто')
+            km = row.get('Км')
+            
+            if pd.notna(tkm_brutto) and pd.notna(km) and km != 0:
+                return float(tkm_brutto) / float(km)
+            
+            return None
+                
+        except (ValueError, TypeError, ZeroDivisionError) as e:
+            logger.debug(f"Ошибка расчета веса поезда: {e}")
+            return None
+        
+    def get_norm_info_with_type(self, norm_id: str) -> Optional[Dict]:
+        """Получает информацию о норме включая ее тип"""
+        try:
+            norm_info = self.get_norm_info(norm_id)
+            if norm_info:
+                norm_info['norm_type'] = self._get_norm_type_from_storage(norm_id)
+            return norm_info
+        except Exception as e:
+            logger.error(f"Ошибка получения информации о норме {norm_id}: {e}")
+            return None
