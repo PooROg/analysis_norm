@@ -585,17 +585,27 @@ class InteractiveNormsAnalyzer:
                 
                 fig.add_trace(
                     go.Scatter(
-                        x=x_const,
-                        y=y_const,
-                        mode='lines',
-                        name=f'Норма {norm_id} ({norm_type}, константа)',
-                        line=dict(width=3, dash='dash'),  # Пунктир ТОЛЬКО для констант
-                        hovertemplate=f'<b>Норма {norm_id} (константа)</b><br>' +
-                                    f'{x_axis_name}: %{{x:.1f}}<br>' +
-                                    f'Расход: {y_single:.1f} кВт·ч/10⁴ ткм<extra></extra>'
+                        x=x_values,
+                        y=y_values,
+                        mode='markers',
+                        name=f'{status} ({len(x_values)})',
+                        marker=dict(
+                            color=color,
+                            size=8,
+                            symbol='circle',
+                            opacity=0.7
+                        ),
+                        customdata=[{  # НОВОЕ: добавляем данные для JavaScript
+                            'rashod_fact': route.get('Расход фактический'),
+                            'rashod_norm': route.get('Расход по норме'),
+                            'norm_interpolated': route.get('Норма интерполированная')
+                        } for _, route in status_data.iterrows() if route_condition],
+                        hovertext=hover_texts,
+                        hoverinfo='text'
                     ),
                     row=1, col=1
                 )
+
                 
             else:
                 # ИСПРАВЛЕНО: Для двух и более точек строим ГЛАДКУЮ гиперболу
@@ -783,6 +793,28 @@ class InteractiveNormsAnalyzer:
                                             hover_texts.append(hover_text)
                     
                     if x_vals_routes:
+                        # Создаем customdata для JavaScript переключателя
+                        custom_data_list = []
+                        for _, row in status_data.iterrows():
+                            if pd.notna(row.get('Номер нормы')):
+                                norm_number_str = str(int(row.get('Номер нормы')))
+                                if norm_number_str in norm_functions:
+                                    current_norm_type = norm_functions[norm_number_str].get('norm_type', 'Нажатие')
+                                    if current_norm_type == norm_type:
+                                        if norm_type == 'Вес':
+                                            x_val = self._calculate_weight_from_data(row)
+                                        else:
+                                            x_val = self._calculate_axle_load_from_data(row)
+                                        
+                                        if x_val and x_val > 0:
+                                            actual_value = row.get('Факт уд') or row.get('Расход фактический')
+                                            if actual_value:
+                                                custom_data_list.append({
+                                                    'rashod_fact': row.get('Расход фактический'),
+                                                    'rashod_norm': row.get('Расход по норме'),
+                                                    'norm_interpolated': row.get('Норма интерполированная')
+                                                })
+                        
                         fig.add_trace(
                             go.Scatter(
                                 x=x_vals_routes,
@@ -790,6 +822,7 @@ class InteractiveNormsAnalyzer:
                                 mode='markers',
                                 name=f'{status} ({norm_type})',
                                 marker=dict(color=color, size=6, opacity=0.7),
+                                customdata=custom_data_list,  # ДОБАВЛЯЕМ customdata
                                 hovertemplate='%{text}<extra></extra>',
                                 text=hover_texts
                             ),
@@ -1400,3 +1433,140 @@ class InteractiveNormsAnalyzer:
             logger.info(f"✅ Найдено {len(points_with_info)} дополнительных точек с информацией о маршрутах для нормы {norm_id}")
         
         return points_with_info
+    
+    def _add_browser_mode_switcher(self, html_content: str) -> str:
+        """Добавляет переключатель режимов в HTML файл браузера"""
+        
+        js_code = '''
+        <div id="mode-switcher" style="
+            position: fixed; 
+            top: 10px; 
+            right: 10px; 
+            z-index: 1000; 
+            background: white; 
+            padding: 15px; 
+            border: 2px solid #4a90e2; 
+            border-radius: 10px;
+            box-shadow: 0 6px 12px rgba(0,0,0,0.15);
+            font-family: Arial, sans-serif;
+            font-size: 14px;
+        ">
+            <h4 style="margin: 0 0 12px 0; color: #333;">Режим отображения точек:</h4>
+            <label style="display: block; margin-bottom: 8px; cursor: pointer;">
+                <input type="radio" name="display_mode" value="work" checked style="margin-right: 8px;"> 
+                <strong>Уд. на работу</strong> (текущий)
+            </label>
+            <label style="display: block; cursor: pointer;">
+                <input type="radio" name="display_mode" value="nf" style="margin-right: 8px;"> 
+                <strong>Н/Ф</strong> (по соотношению норма/факт)
+            </label>
+        </div>
+
+        <script>
+        let originalData = {};
+        let plotlyDiv = null;
+
+        document.addEventListener('DOMContentLoaded', function() {
+            // Ждем загрузки Plotly
+            setTimeout(function() {
+                plotlyDiv = document.querySelector('.js-plotly-plot') || document.querySelector('[data-plotly]');
+                
+                if (plotlyDiv && plotlyDiv.data) {
+                    console.log('График найден, сохраняем данные...');
+                    saveOriginalData();
+                    
+                    document.querySelectorAll('input[name="display_mode"]').forEach(radio => {
+                        radio.addEventListener('change', switchDisplayMode);
+                    });
+                } else {
+                    console.log('График не найден, повторная попытка...');
+                    setTimeout(arguments.callee, 500);
+                }
+            }, 1000);
+        });
+
+        function saveOriginalData() {
+            originalData = {};
+            
+            plotlyDiv.data.forEach((trace, index) => {
+                if (trace.customdata && trace.y) {
+                    originalData[index] = {
+                        x: [...trace.x],
+                        y: [...trace.y],
+                        customdata: trace.customdata ? JSON.parse(JSON.stringify(trace.customdata)) : null
+                    };
+                    console.log('Сохранены данные для trace', index, 'точек:', trace.y.length);
+                }
+            });
+            
+            console.log('Сохранено трасс с данными:', Object.keys(originalData).length);
+        }
+
+        function switchDisplayMode() {
+            const mode = document.querySelector('input[name="display_mode"]:checked').value;
+            console.log('Переключение в режим:', mode);
+            
+            if (!plotlyDiv || !originalData) {
+                console.log('Нет данных для переключения');
+                return;
+            }
+            
+            const update = {};
+            let updatedTraces = 0;
+            
+            plotlyDiv.data.forEach((trace, index) => {
+                if (originalData[index] && trace.customdata) {
+                    if (mode === 'nf') {
+                        // Режим Н/Ф - пересчитываем Y координаты
+                        const newY = trace.y.map((originalY, pointIndex) => {
+                            const customData = trace.customdata[pointIndex];
+                            
+                            if (customData && 
+                                customData.rashod_fact != null && 
+                                customData.rashod_norm != null && 
+                                customData.norm_interpolated != null &&
+                                customData.rashod_norm > 0) {
+                                
+                                // Вычисляем процентное отклонение факта от нормы
+                                const deviationPercent = ((customData.rashod_fact - customData.rashod_norm) / customData.rashod_norm) * 100;
+                                
+                                // Применяем отклонение к интерполированной норме:
+                                // Если экономия (-20%) - точка опускается ниже нормы
+                                // Если перерасход (+15%) - точка поднимается выше нормы
+                                const adjustedY = customData.norm_interpolated * (1 + deviationPercent / 100);
+                                
+                                return adjustedY;
+                            }
+                            
+                            return originalY;
+                        });
+                        
+                        update['y[' + index + ']'] = newY;
+                        updatedTraces++;
+                    } else {
+                        // Режим "Уд. на работу" - возвращаем исходные данные
+                        update['y[' + index + ']'] = originalData[index].y;
+                        updatedTraces++;
+                    }
+                }
+            });
+            
+            console.log('Обновлено трасс:', updatedTraces);
+            
+            if (Object.keys(update).length > 0) {
+                Plotly.restyle(plotlyDiv, update).then(() => {
+                    console.log('График успешно обновлен');
+                }).catch(error => {
+                    console.error('Ошибка обновления графика:', error);
+                });
+            }
+        }
+        </script>
+        '''
+        
+        if '</body>' in html_content:
+            html_content = html_content.replace('</body>', js_code + '\n</body>')
+        else:
+            html_content += js_code
+        
+        return html_content

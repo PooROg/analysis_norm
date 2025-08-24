@@ -676,16 +676,39 @@ class NormsAnalyzerGUI:
         # Сохраняем график
         self.current_plot = fig
         self.temp_html_file = tempfile.mktemp(suffix='.html')
-        plot(fig, filename=self.temp_html_file, auto_open=False)
         
-        # Активируем кнопки
+        # ИЗМЕНЕНИЕ: Создаем HTML с переключателем режимов
+        from plotly.offline import plot
+        
+        # Получаем HTML строку вместо сохранения в файл
+        html_string = plot(fig, output_type='div', include_plotlyjs=True, 
+                        config={'displayModeBar': True, 'locale': 'ru'})
+        
+        # Создаем полный HTML документ с правильной кодировкой
+        full_html = f'''<!DOCTYPE html>
+    <html lang="ru">
+    <head>
+        <title>График анализа участка {section_name}</title>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    </head>
+    <body>
+        {html_string}
+    </body>
+    </html>'''
+        
+        # Добавляем переключатель режимов
+        full_html = self.analyzer._add_browser_mode_switcher(full_html)
+        
+        # Сохраняем с правильной кодировкой
+        with open(self.temp_html_file, 'w', encoding='utf-8') as f:
+            f.write(full_html)
+        
+        # Активируем кнопки и обновляем интерфейс
         self.view_plot_button.config(state='normal')
         self.export_plot_button.config(state='normal')
         
-        # Обновляем статистику
         self.update_statistics(statistics)
-        
-        # Обновляем информацию о графике
         self.update_plot_info(section_name, statistics, norm_id, single_section_only)
         
         norm_text = f" с нормой {norm_id}" if norm_id else ""
