@@ -237,34 +237,6 @@ class NormStorage:
             'cached_functions': len(self.norm_functions),
         }
 
-    def export_to_json(self, output_file: str) -> bool:
-        """Экспортирует нормы в JSON."""
-        try:
-            export_data = {'metadata': self.metadata, 'norms': self.norms_data}
-            with open(output_file, 'w', encoding='utf-8') as f:
-                json.dump(export_data, f, ensure_ascii=False, indent=2, default=str)
-            logger.info(f"Нормы экспортированы в JSON: {output_file}")
-            return True
-        except Exception as e:
-            logger.error(f"Ошибка экспорта в JSON: {e}")
-            return False
-
-    def import_from_json(self, input_file: str) -> bool:
-        """Импортирует нормы из JSON (с последующим обновлением кэша)."""
-        try:
-            with open(input_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            norms = data.get('norms', {})
-            if not norms:
-                logger.warning("В JSON нет норм для импорта")
-                return False
-            self.add_or_update_norms(norms)
-            logger.info(f"Импортировано норм из JSON: {len(norms)}")
-            return True
-        except Exception as e:
-            logger.error(f"Ошибка импорта из JSON: {e}")
-            return False
-
     def validate_norms(self) -> Dict[str, List[str]]:
         """Валидация норм:
         - Мин. 1 точка
@@ -319,14 +291,6 @@ class NormStorage:
         except Exception as e:
             logger.error(f"Ошибка сравнения норм: {e}")
             return True
-
-    def cleanup_storage(self):
-        """Очищает кэш функций для отсутствующих норм."""
-        existing = set(self.norms_data.keys())
-        cached = set(self.norm_functions.keys())
-        for nid in (cached - existing):
-            del self.norm_functions[nid]
-        logger.debug(f"Очистка кэша: удалено {len(cached - existing)} функций")
 
     def get_norm_statistics(self) -> Dict:
         """Статистика по нормам: количество, распределение по типам/числу точек, диапазоны."""

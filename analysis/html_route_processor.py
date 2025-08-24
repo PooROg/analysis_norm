@@ -1109,9 +1109,3 @@ class HTMLRouteProcessor:
                     logger.info("Маршрут с Ю6 ('1 2 ,0' или '1 3 ,0') — пропущен")
                     return True
         return False
-
-    # ================== Совместимость (если кто-то зовет приватный метод) ==================
-
-    def _read_file_text(self, path: str) -> Optional[str]:
-        """Совместимость: делегирование общей утилите чтения."""
-        return read_text(path)
