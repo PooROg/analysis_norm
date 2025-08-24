@@ -158,10 +158,19 @@ class HTMLRouteProcessor:
                 metadata['identifier'] = match.group(1)
                 break
         
+        # Извлекаем дополнительные данные из ТУ3
+        trip_date, driver_tab = None, None
+        try:
+            loco_series, loco_number, trip_date, driver_tab = self.extract_loco_data_from_html(html_line)
+            metadata['trip_date'] = trip_date
+            metadata['driver_tab'] = driver_tab
+        except:
+            logger.debug("Не удалось извлечь дату поездки и табельный из ТУ3")
+        
         return metadata
     
-    def extract_loco_data_from_html(self, html_content: str) -> Tuple[Optional[str], Optional[str]]:
-        """Извлекает серию и номер локомотива из HTML, меняет местами как запросил пользователь"""
+    def extract_loco_data_from_html(self, html_content: str) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
+        """Извлекает серию и номер локомотива, дату поездки и табельный номер машиниста из HTML"""
         soup = BeautifulSoup(html_content, 'html.parser')
         
         tu3_fonts = soup.find_all('font', class_=['itog2', 'itog3'])
@@ -185,10 +194,12 @@ class HTMLRouteProcessor:
                 
                 logger.debug(f"ТУ3 данные: {data_elements}")
                 
-                if len(data_elements) >= 4:
-                    # Структура: [номер_маршрута, депо, номер_лок, серия, ...]
+                if len(data_elements) >= 7:
+                    # Структура: [номер_маршрута, депо, номер_лок, серия, ..., дата_поездки, табельный, ...]
                     loco_number_raw = data_elements[2]  # номер локомотива
                     series_raw = data_elements[3]       # серия
+                    trip_date_raw = data_elements[5]    # дата поездки (5-й элемент)
+                    driver_tab_raw = data_elements[6]   # табельный машиниста (6-й элемент)
                     
                     # Обрабатываем серию
                     if ',' in series_raw:
@@ -208,11 +219,17 @@ class HTMLRouteProcessor:
                     final_loco_series = loco_number_raw    # 240 -> серия
                     final_loco_number = processed_series   # 615 -> номер
                     
-                    logger.debug(f"Результат: серия={final_loco_series}, номер={final_loco_number}")
-                    return final_loco_series, final_loco_number
+                    # Обрабатываем дату поездки - убираем все нецифровые символы
+                    trip_date_clean = re.sub(r'[^\d]', '', trip_date_raw)
+                    
+                    # Обрабатываем табельный номер - убираем все нецифровые символы
+                    driver_tab_clean = re.sub(r'[^\d]', '', driver_tab_raw)
+                    
+                    logger.debug(f"Результат: серия={final_loco_series}, номер={final_loco_number}, дата_поездки={trip_date_clean}, табельный={driver_tab_clean}")
+                    return final_loco_series, final_loco_number, trip_date_clean, driver_tab_clean
         
         logger.debug("ТУ3 не найдено")
-        return None, None
+        return None, None, None, None
     
     def extract_yu7_data(self, html_content: str) -> List[Tuple[int, int, int]]:
         """Извлекает данные Ю7 из HTML"""
@@ -955,8 +972,8 @@ class HTMLRouteProcessor:
         depot = metadata.get('depot', '')
         identifier = metadata.get('identifier')
         
-        # Извлекаем серию и номер локомотива
-        loco_series, loco_number = self.extract_loco_data_from_html(route_html)
+        # Извлекаем серию и номер локомотива, дату поездки и табельный
+        loco_series, loco_number, trip_date, driver_tab = self.extract_loco_data_from_html(route_html)
         
         # Извлекаем данные Ю7 (НЕТТО, БРУТТО, ОСИ)
         yu7_data = self.extract_yu7_data(route_html)
@@ -1043,6 +1060,8 @@ class HTMLRouteProcessor:
             row = {
                 'Номер маршрута': route_number,
                 'Дата маршрута': route_date,
+                'Дата поездки': trip_date,
+                'Табельный машиниста': driver_tab,
                 'Депо': depot,
                 'Идентификатор': identifier,
                 'Серия локомотива': loco_series,
@@ -1182,14 +1201,25 @@ class HTMLRouteProcessor:
             logger.error("Маршруты не найдены в HTML")
             return pd.DataFrame(), stats
         
-        # Группируем маршруты по ключу (номер + дата)
+        # Группируем маршруты по новому ключу (номер + дата поездки + табельный)
         route_groups = defaultdict(list)
+        skipped_by_yu6 = 0
+        
         for route_html, metadata in routes:
-            if metadata['number'] and metadata['date']:
-                key = f"{metadata['number']}_{metadata['date']}"
+            # Проверяем на Ю6 фильтр
+            if self.check_yu6_filter(route_html):
+                skipped_by_yu6 += 1
+                stats['routes_skipped'] += 1
+                continue
+            
+            if metadata['number'] and metadata.get('trip_date') and metadata.get('driver_tab'):
+                key = f"{metadata['number']}_{metadata.get('trip_date')}_{metadata.get('driver_tab')}"
                 route_groups[key].append((route_html, metadata))
             else:
                 stats['routes_skipped'] += 1
+        
+        if skipped_by_yu6 > 0:
+            logger.info(f"Пропущено {skipped_by_yu6} маршрутов по фильтру Ю6")
         
         stats['unique_routes'] = len(route_groups)
         
@@ -1210,7 +1240,7 @@ class HTMLRouteProcessor:
                     'identifiers': [g[1]['identifier'] for g in group]
                 }
             
-            # Проверяем маршруты с равными расходами
+            # Проверяем маршруты с равными расходами (старая логика, но теперь не используется для исключения)
             equal_count = sum(1 for r in group if self.check_rashod_equal_html(r[0]))
             if equal_count > 0:
                 stats['routes_with_equal_rashod'] += equal_count
@@ -1314,9 +1344,10 @@ class HTMLRouteProcessor:
             from openpyxl.utils import get_column_letter
             from openpyxl.styles import Font, Border, Side, PatternFill
             
-            # Определяем порядок колонок
+            # Определяем порядок колонок (обновленный с новыми полями)
             columns = [
-                'Номер маршрута', 'Дата маршрута', 'Серия локомотива', 'Номер локомотива',
+                'Номер маршрута', 'Дата маршрута', 'Дата поездки', 'Табельный машиниста',
+                'Серия локомотива', 'Номер локомотива',
                 'НЕТТО', 'БРУТТО', 'ОСИ', 'Наименование участка', 'Номер нормы', 'Дв. тяга',
                 'Ткм брутто', 'Км', 'Пр.', 'Расход фактический', 
                 'Расход по норме', 'Уд. норма, норма на 1 час ман. раб.', 'Нажатие на ось',
@@ -1472,3 +1503,37 @@ class HTMLRouteProcessor:
             
             adjusted_width = min(max_length + 2, 50)
             ws.column_dimensions[column_letter].width = adjusted_width
+
+    def check_yu6_filter(self, route_html: str) -> bool:
+        """Проверяет наличие Ю6 с значениями '1 2 ,0' или '1 3 ,0' для игнорирования маршрута"""
+        soup = BeautifulSoup(route_html, 'html.parser')
+        
+        all_fonts = soup.find_all('font')
+        
+        for font in all_fonts:
+            font_text = font.get_text().strip()
+            if font_text.startswith('Ю6'):
+                # Проверяем все элементы после Ю6
+                current = font
+                data_elements = []
+                
+                while current:
+                    current = current.find_next_sibling()
+                    if current and current.name == 'font':
+                        text = current.get_text().strip().replace('\xa0', ' ').replace('&nbsp;', ' ')
+                        if text:
+                            data_elements.append(text)
+                    elif current and current.name == 'br':
+                        break
+                    elif not current:
+                        break
+                
+                logger.debug(f"Ю6 данные найдены: {data_elements[:10]}...")
+                
+                # Ищем паттерны '1 2 ,0' или '1 3 ,0' в данных
+                data_str = ' '.join(data_elements)
+                if re.search(r'1\s+2\s+,0', data_str) or re.search(r'1\s+3\s+,0', data_str):
+                    logger.info("Найден маршрут с Ю6 содержащим '1 2 ,0' или '1 3 ,0' - игнорируется")
+                    return True
+        
+        return False
