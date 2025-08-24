@@ -196,16 +196,16 @@ class HTMLRouteProcessor:
                 
                 if len(data_elements) >= 7:
                     # Структура: [номер_маршрута, депо, номер_лок, серия, ..., дата_поездки, табельный, ...]
-                    loco_number_raw = data_elements[2]  # номер локомотива
-                    series_raw = data_elements[3]       # серия
-                    trip_date_raw = data_elements[5]    # дата поездки (5-й элемент)
-                    driver_tab_raw = data_elements[6]   # табельный машиниста (6-й элемент)
+                    series_raw = data_elements[2]  # номер локомотиваseries_ra1w 
+                    loco_number_raw = data_elements[3]       # серия
+                    trip_date_raw = data_elements[4]    # дата поездки
+                    driver_tab_raw = data_elements[5]   # табельный машиниста
                     
                     # Обрабатываем серию
-                    if ',' in series_raw:
-                        series_part = series_raw.split(',')[0]
+                    if ',' in loco_number_raw:
+                        series_part = loco_number_raw.split(',')[0]
                     else:
-                        series_part = series_raw
+                        series_part = loco_number_raw
                     
                     series_clean = re.sub(r'[^\d]', '', series_part)
                     
@@ -216,7 +216,7 @@ class HTMLRouteProcessor:
                         processed_series = series_clean
                     
                     # Меняем местами серию и номер как просил пользователь
-                    final_loco_series = loco_number_raw    # 240 -> серия
+                    final_loco_series = series_raw    # 240 -> серия
                     final_loco_number = processed_series   # 615 -> номер
                     
                     # Обрабатываем дату поездки - убираем все нецифровые символы
