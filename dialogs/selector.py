@@ -1,45 +1,63 @@
 # dialogs/selector.py
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+from __future__ import annotations
+
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
-from core.filter import LocomotiveFilter
+from pathlib import Path
+from tkinter import filedialog, messagebox, ttk
+from typing import Dict, List, Tuple
+
 from core.coefficients import LocomotiveCoefficientsManager
 
+
 class LocomotiveSelectorDialog:
-    """Диалог выбора локомотивов для анализа"""
-    
-    def __init__(self, p, lf, cm=None):
+    """Диалог выбора локомотивов для анализа."""
+
+    def __init__(self, p, lf, cm: LocomotiveCoefficientsManager | None = None):
         self.p = p
         self.f = lf
         self.cm = cm or LocomotiveCoefficientsManager()
+
+        # Состояние
         self.res = None
-        self.cv = {}
-        self.sv = {}
-        self.uc = tk.BooleanVar(value=False)
-        self.exclude_low_work = tk.BooleanVar(value=False)  # Новая переменная
+        self.uc = tk.BooleanVar(value=False)                # применять коэффициенты
+        self.exclude_low_work = tk.BooleanVar(value=False)  # исключать локомотивы с низкой работой
+
+        # Деревья и состояния выбора
+        self.trees: Dict[str, ttk.Treeview] = {}                   # серия -> дерево
+        self.series_vars: Dict[str, tk.BooleanVar] = {}            # серия -> чекбокс "вся серия"
+        self.selected: set[Tuple[str, int]] = set()                # выбранные (серия, номер)
+
+        # UI
         self.d = tk.Toplevel(p)
         self.d.title("Выбор локомотивов и коэффициентов")
         self.d.geometry("900x700")
         self.d.transient(p)
         self.d.grab_set()
-        self.create_widgets()
-        self.load_current_selection()
+
+        self.create_widgets()          # публичный метод
+        self.load_current_selection()  # синхронизация с фильтром (по умолчанию все выбраны)
         self.center_window()
-    
+
+    # -------------------- Вспомогательные методы UI --------------------
+
     def center_window(self):
         self.d.update_idletasks()
-        w = self.d.winfo_width()
-        h = self.d.winfo_height()
+        w, h = self.d.winfo_width(), self.d.winfo_height()
         x = (self.d.winfo_screenwidth() // 2) - (w // 2)
         y = (self.d.winfo_screenheight() // 2) - (h // 2)
-        self.d.geometry(f'{w}x{h}+{x}+{y}')
-    
+        self.d.geometry(f"{w}x{h}+{x}+{y}")
+
     def create_widgets(self):
+        """Создание основных виджетов диалога (публичный API)."""
         mf = ttk.Frame(self.d, padding="10")
         mf.pack(fill=tk.BOTH, expand=True)
+
+        # Блок коэффициентов
         cf = ttk.LabelFrame(mf, text="Коэффициенты расхода локомотивов", padding="10")
         cf.pack(fill=tk.X, pady=(0, 10))
+
         ff = ttk.Frame(cf)
         ff.pack(fill=tk.X, pady=(0, 5))
         ttk.Label(ff, text="Файл коэффициентов:").pack(side=tk.LEFT, padx=(0, 5))
@@ -47,27 +65,29 @@ class LocomotiveSelectorDialog:
         self.cfl.pack(side=tk.LEFT, padx=(0, 10))
         ttk.Button(ff, text="Загрузить", command=self.load_coefficients_file).pack(side=tk.LEFT, padx=(0, 5))
         ttk.Button(ff, text="Очистить", command=self.clear_coefficients).pack(side=tk.LEFT)
+
         self.csl = ttk.Label(cf, text="", foreground="blue")
         self.csl.pack(fill=tk.X, pady=(5, 0))
-        
+
         self.ucc = ttk.Checkbutton(
             cf,
             text="Применять коэффициенты при анализе",
             variable=self.uc,
-            command=self.on_use_coefficients_changed
+            command=self.on_use_coefficients_changed,
         )
         self.ucc.pack(pady=(5, 0))
-        
-        # Добавляем новую галку для исключения локомотивов с малой работой
+
         self.elwc = ttk.Checkbutton(
             cf,
             text="Исключить при анализе локомотивы с менее 200 10тыс.ткм брутто",
-            variable=self.exclude_low_work
+            variable=self.exclude_low_work,
         )
         self.elwc.pack(pady=(5, 0))
-        
+
+        # Блок выбора локомотивов
         sf = ttk.LabelFrame(mf, text="Выбор локомотивов для анализа", padding="10")
         sf.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+
         ctf = ttk.Frame(sf)
         ctf.pack(fill=tk.X, pady=(0, 10))
         ttk.Button(ctf, text="Выбрать все", command=self.select_all).pack(side=tk.LEFT, padx=(0, 5))
@@ -75,182 +95,337 @@ class LocomotiveSelectorDialog:
         ttk.Button(ctf, text="Инвертировать", command=self.invert_selection).pack(side=tk.LEFT, padx=(0, 10))
         self.sl = ttk.Label(ctf, text="", foreground="green")
         self.sl.pack(side=tk.LEFT, padx=(10, 0))
+
         self.nb = ttk.Notebook(sf)
         self.nb.pack(fill=tk.BOTH, expand=True)
         self.create_series_tabs()
+
+        # Подсказка и кнопки действий
         inf = ttk.Frame(mf)
         inf.pack(fill=tk.X)
-        it = ("• Выберите локомотивы, которые нужно включить в анализ\n"
-                    "• Загрузите файл коэффициентов для учета индивидуальных характеристик\n"
-                    "• При включенных коэффициентах фактический расход будет скорректирован")
-        il = ttk.Label(inf, text=it, foreground="gray")
-        il.pack(pady=(0, 10))
+        hint = (
+            "• Выберите локомотивы, которые нужно включить в анализ\n"
+            "• Загрузите файл коэффициентов для учета индивидуальных характеристик\n"
+            "• При включенных коэффициентах фактический расход будет скорректирован"
+        )
+        ttk.Label(inf, text=hint, foreground="gray").pack(pady=(0, 10))
         bf = ttk.Frame(inf)
         bf.pack()
         ttk.Button(bf, text="Применить", command=self.apply_selection).pack(side=tk.LEFT, padx=(0, 5))
         ttk.Button(bf, text="Отмена", command=self.cancel).pack(side=tk.LEFT)
-    
+
     def create_series_tabs(self):
-        lbs = self.f.get_locomotives_by_series()
-        for s in sorted(lbs.keys()):
-            tf = ttk.Frame(self.nb)
-            self.nb.add(tf, text=s)
-            cn = tk.Canvas(tf, highlightthickness=0)
-            sb = ttk.Scrollbar(tf, orient="vertical", command=cn.yview)
-            scf = ttk.Frame(cn)
-            scf.bind("<Configure>", lambda e: cn.configure(scrollregion=cn.bbox("all")))
-            cn.create_window((0, 0), window=scf, anchor="nw")
-            cn.configure(yscrollcommand=sb.set)
-            sv = tk.BooleanVar(value=True)
-            self.sv[s] = sv
-            sc = ttk.Checkbutton(
-                scf,
-                text=f"Выбрать всю серию {s}",
-                variable=sv,
-                command=lambda se=s: self.toggle_series(se)
-            )
-            sc.grid(row=0, column=0, columnspan=4, sticky=tk.W, padx=5, pady=(5, 10))
-            ttk.Label(scf, text="№", font=('Arial', 9, 'bold')).grid(row=1, column=0, padx=5, pady=2)
-            ttk.Label(scf, text="Выбор", font=('Arial', 9, 'bold')).grid(row=1, column=1, padx=5, pady=2)
-            ttk.Label(scf, text="Номер", font=('Arial', 9, 'bold')).grid(row=1, column=2, padx=5, pady=2)
-            ttk.Label(scf, text="Коэффициент", font=('Arial', 9, 'bold')).grid(row=1, column=3, padx=5, pady=2)
-            ttk.Separator(scf, orient='horizontal').grid(row=2, column=0, columnspan=4, sticky='ew', pady=2)
-            nums = lbs[s]
-            for i, n in enumerate(nums):
-                rn = i + 3
-                ttk.Label(scf, text=f"{i+1}").grid(row=rn, column=0, padx=5, pady=1)
-                v = tk.BooleanVar(value=True)
-                self.cv[(s, n)] = v
-                c = ttk.Checkbutton(scf, variable=v, command=lambda: self.update_selection_count())
-                c.grid(row=rn, column=1, padx=5, pady=1)
-                # Убираем ведущие нули при отображении
-                display_num = str(n) if n >= 1000 else str(n)
-                ttk.Label(scf, text=display_num).grid(row=rn, column=2, padx=5, pady=1)
-                co = self.cm.get_coefficient(s, n)
-                ct = f"{co:.3f}" if co != 1.0 else "-"
-                cc = "red" if co > 1.05 else "green" if co < 0.95 else "black"
-                cl = ttk.Label(scf, text=ct, foreground=cc)
-                cl.grid(row=rn, column=3, padx=5, pady=1)
-            cn.pack(side="left", fill="both", expand=True)
-            sb.pack(side="right", fill="y")
-    
-    def toggle_series(self, s):
-        is_sel = self.sv[s].get()
-        for (se, n), v in self.cv.items():
-            if se == s:
-                v.set(is_sel)
+        """Создает вкладки по сериям с Treeview (быстро и масштабируемо)."""
+        # Очистка старых вкладок
+        for tab in list(self.nb.tabs()):
+            self.nb.forget(tab)
+        self.trees.clear()
+        self.series_vars.clear()
+
+        by_series = self.f.get_locomotives_by_series()
+        for series in sorted(by_series.keys()):
+            numbers = sorted(by_series[series])
+            self._build_series_tab(series, numbers)
+
         self.update_selection_count()
-    
+
+    def _build_series_tab(self, series: str, numbers: List[int]):
+        """Строит вкладку серии и наполняет её данными."""
+        frame = ttk.Frame(self.nb)
+        self.nb.add(frame, text=series)
+
+        # Верхний чекбокс "вся серия"
+        sv = tk.BooleanVar(value=True)
+        self.series_vars[series] = sv
+        ttk.Checkbutton(
+            frame,
+            text=f"Выбрать всю серию {series}",
+            variable=sv,
+            command=lambda se=series: self.toggle_series(se),
+        ).pack(anchor=tk.W, padx=5, pady=(5, 5))
+
+        # Дерево с данными
+        columns = ("idx", "sel", "num", "coef")
+        tree = ttk.Treeview(frame, columns=columns, show="headings", height=18)
+        self.trees[series] = tree
+
+        tree.heading("idx", text="№")
+        tree.heading("sel", text="Выбор")
+        tree.heading("num", text="Номер")
+        tree.heading("coef", text="Коэффициент")
+
+        tree.column("idx", width=60, anchor=tk.E, stretch=False)
+        tree.column("sel", width=80, anchor=tk.CENTER, stretch=False)
+        tree.column("num", width=120, anchor=tk.CENTER, stretch=False)
+        tree.column("coef", width=140, anchor=tk.CENTER, stretch=False)
+
+        # Цветовые теги (целая строка окрашивается — достаточно для визуального различия)
+        tree.tag_configure("above_norm", foreground="red")
+        tree.tag_configure("below_norm", foreground="green")
+        tree.tag_configure("norm", foreground="black")
+
+        # Скроллбар
+        vsb = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=vsb.set)
+        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Заполнение строк
+        for i, n in enumerate(numbers, start=1):
+            coef = self.cm.get_coefficient(series, n)
+            coef_text = f"{coef:.3f}" if coef != 1.0 else "-"
+            tag = "above_norm" if coef > 1.05 else "below_norm" if coef < 0.95 else "norm"
+            # По умолчанию ставим галочку — дальше load_current_selection приведёт к реальному состоянию
+            tree.insert("", "end", iid=f"{series}:{n}", values=(i, "✓", n, coef_text), tags=(tag,))
+
+        # Обработка кликов: переключаем выбор по клику на колонке "Выбор" и по пробелу
+        tree.bind("<Button-1>", lambda e, s=series: self._on_tree_click(e, s), add="+")
+        tree.bind("<space>", lambda e, s=series: self._on_tree_space(e, s), add="+")
+
+    # -------------------- Обработчики Treeview --------------------
+
+    def _on_tree_click(self, event, series: str):
+        tree = self.trees[series]
+        region = tree.identify("region", event.x, event.y)
+        if region != "cell":
+            return  # клики вне ячеек игнорируем
+        col = tree.identify_column(event.x)
+        if col != "#2":  # реагируем только на колонку "Выбор"
+            return
+        iid = tree.identify_row(event.y)
+        if not iid:
+            return
+        number = int(tree.set(iid, "num"))
+        current = (series, number) in self.selected
+        self._set_row_selected(series, number, not current)
+
+    def _on_tree_space(self, event, series: str):
+        """Пробел переключает текущую строку."""
+        tree = self.trees[series]
+        focus = tree.focus()
+        if not focus:
+            return
+        number = int(tree.set(focus, "num"))
+        current = (series, number) in self.selected
+        self._set_row_selected(series, number, not current)
+
+    # -------------------- Логика выбора --------------------
+
+    def _set_row_selected(self, series: str, number: int, is_selected: bool):
+        """Устанавливает состояние выбора для одной строки и обновляет UI."""
+        key = (series, number)
+        if is_selected:
+            self.selected.add(key)
+        else:
+            self.selected.discard(key)
+
+        tree = self.trees[series]
+        iid = f"{series}:{number}"
+        if iid in tree.get_children(""):
+            tree.set(iid, "sel", "✓" if is_selected else "")
+
+        # Обновляем чекбокс серии и счётчик
+        self._recalculate_series_checkbox(series)
+        self.update_selection_count()
+
+    def _recalculate_series_checkbox(self, series: str):
+        """Обновляет чекбокс серии: отмечен, если все локомотивы этой серии выбраны."""
+        tree = self.trees[series]
+        items = tree.get_children("")
+        all_selected = True
+        for iid in items:
+            n = int(tree.set(iid, "num"))
+            if (series, n) not in self.selected:
+                all_selected = False
+                break
+        self.series_vars[series].set(all_selected)
+
+    def toggle_series(self, series: str):
+        """Отметить/снять всю серию согласно чекбоксу серии."""
+        want = self.series_vars[series].get()
+        tree = self.trees[series]
+        for iid in tree.get_children(""):
+            n = int(tree.set(iid, "num"))
+            self._set_row_selected(series, n, want)
+
     def select_all(self):
-        for v in self.cv.values():
-            v.set(True)
-        for v in self.sv.values():
-            v.set(True)
+        """Выбрать все локомотивы (публичный API)."""
+        self.selected.clear()
+        # Массовое включение быстрее через один проход
+        for series, tree in self.trees.items():
+            for iid in tree.get_children(""):
+                n = int(tree.set(iid, "num"))
+                self.selected.add((series, n))
+                tree.set(iid, "sel", "✓")
+            self.series_vars[series].set(True)
         self.update_selection_count()
-    
+
     def deselect_all(self):
-        for v in self.cv.values():
-            v.set(False)
-        for v in self.sv.values():
-            v.set(False)
+        """Снять выбор со всех локомотивов (публичный API)."""
+        self.selected.clear()
+        for series, tree in self.trees.items():
+            for iid in tree.get_children(""):
+                tree.set(iid, "sel", "")
+            self.series_vars[series].set(False)
         self.update_selection_count()
-    
+
     def invert_selection(self):
-        for v in self.cv.values():
-            v.set(not v.get())
+        """Инвертировать выбор по всем сериям."""
+        new_selected: set[Tuple[str, int]] = set()
+        for series, tree in self.trees.items():
+            for iid in tree.get_children(""):
+                n = int(tree.set(iid, "num"))
+                key = (series, n)
+                now = key in self.selected
+                will = not now
+                if will:
+                    new_selected.add(key)
+                tree.set(iid, "sel", "✓" if will else "")
+            self.series_vars[series].set(self._series_all_selected(series, new_selected))
+        self.selected = new_selected
         self.update_selection_count()
-        self.update_series_checkboxes()
-    
+
+    def _series_all_selected(self, series: str, selected_set: set[Tuple[str, int]]) -> bool:
+        """Проверяет, выбраны ли все локомотивы серии с заданным набором выбора."""
+        tree = self.trees[series]
+        for iid in tree.get_children(""):
+            n = int(tree.set(iid, "num"))
+            if (series, n) not in selected_set:
+                return False
+        return True
+
     def update_series_checkboxes(self):
-        for s, sv in self.sv.items():
-            all_sel = True
-            for (se, _), v in self.cv.items():
-                if se == s and not v.get():
-                    all_sel = False
-                    break
-            sv.set(all_sel)
-    
+        """Синхронизировать чекбоксы серий на основе текущего выбора."""
+        for series in self.trees:
+            self._recalculate_series_checkbox(series)
+
     def update_selection_count(self):
-        sel = sum(1 for v in self.cv.values() if v.get())
-        tot = len(self.cv)
-        self.sl.config(text=f"Выбрано: {sel} из {tot}")
-    
+        """Обновляет метку с количеством выбранных локомотивов."""
+        total = sum(len(t.get_children("")) for t in self.trees.values())
+        selected = len(self.selected)
+        self.sl.config(text=f"Выбрано: {selected} из {total}")
+
+    # -------------------- Работа с коэффициентами --------------------
+
     def load_coefficients_file(self):
-        fn = filedialog.askopenfilename(title="Выберите файл коэффициентов", filetypes=[("Excel files", "*.xlsx *.xls")])
-        if fn:
-            # Получаем порог фильтрации
-            min_work = 200 if self.exclude_low_work.get() else 0
-            
-            if self.cm.load_coefficients(fn, min_work):
-                self.cfl.config(text=fn.split('/')[-1], foreground="black")
-                st = self.cm.get_statistics()
-                if st:
-                    st_txt = f"Загружено: {st['total_locomotives']} локомотивов, {st['series_count']} серий. Средн. откл.: {st['avg_deviation_percent']:.1f}%"
-                    self.csl.config(text=st_txt)
-                messagebox.showinfo("Успех", f"Коэффициенты загружены успешно!\nЛокомотивов: {st['total_locomotives']}")
-                # Обновляем интерфейс
-                self.refresh_coefficients_display()
+        """Загрузить файл коэффициентов и обновить UI."""
+        fn = filedialog.askopenfilename(
+            title="Выберите файл коэффициентов",
+            filetypes=[("Excel files", "*.xlsx *.xls")],
+        )
+        if not fn:
+            return
+
+        min_work = 200 if self.exclude_low_work.get() else 0
+        if self.cm.load_coefficients(fn, min_work):
+            from pathlib import Path
+            self.cfl.config(text=Path(fn).name, foreground="black")
+
+            st = self.cm.get_statistics() or {}
+            if st:
+                self.csl.config(
+                    text=f"Загружено: {st['total_locomotives']} локомотивов, "
+                        f"{st['series_count']} серий. "
+                        f"Средн. откл.: {st['avg_deviation_percent']:.1f}%"
+                )
+                messagebox.showinfo(
+                    "Успех",
+                    f"Коэффициенты загружены успешно!\nЛокомотивов: {st['total_locomotives']}",
+                )
             else:
-                messagebox.showerror("Ошибка", "Не удалось загрузить файл коэффициентов")
-    
+                self.csl.config(text="Коэффициенты загружены")
+                messagebox.showinfo("Успех", "Коэффициенты загружены успешно!")
+
+            # Точечное обновление — меняем только колонку коэффициентов и цвета
+            self.update_coefficients_in_place()
+            # Пересчёт метки выбора (количество выбранных не меняется)
+            self.update_selection_count()
+        else:
+            messagebox.showerror("Ошибка", "Не удалось загрузить файл коэффициентов")
+
     def clear_coefficients(self):
+        """Сбросить загруженные коэффициенты и обновить UI."""
         self.cm = LocomotiveCoefficientsManager()
         self.cfl.config(text="Не загружен", foreground="gray")
         self.csl.config(text="")
         self.uc.set(False)
-        self.refresh_coefficients_display()
-    
-    def refresh_coefficients_display(self):
-        # Сохраняем текущий выбор
-        current_selection = {}
-        for (s, n), v in self.cv.items():
-            current_selection[(s, n)] = v.get()
-        
-        # Полностью пересоздаем все вкладки для обновления коэффициентов
-        for tab_id in self.nb.tabs():
-            self.nb.forget(tab_id)
-        
-        # Очищаем старые данные
-        self.cv.clear()
-        self.sv.clear()
-        
-        # Создаем вкладки заново с обновленными коэффициентами
-        self.create_series_tabs()
-        
-        # Восстанавливаем выбор
-        for (s, n), selected in current_selection.items():
-            if (s, n) in self.cv:
-                self.cv[(s, n)].set(selected)
-        
-        self.update_series_checkboxes()
+
+        self.update_coefficients_in_place()
         self.update_selection_count()
-    
+
+    def _restore_selection(self, selection: set[Tuple[str, int]]):
+        """Восстановить состояние выбора после перестройки UI."""
+        self.selected.clear()
+        for series, tree in self.trees.items():
+            for iid in tree.get_children(""):
+                n = int(tree.set(iid, "num"))
+                key = (series, n)
+                is_sel = key in selection
+                if is_sel:
+                    self.selected.add(key)
+                tree.set(iid, "sel", "✓" if is_sel else "")
+            self.series_vars[series].set(self._series_all_selected(series, self.selected))
+        self.update_selection_count()
+
     def on_use_coefficients_changed(self):
-        if self.uc.get() and not self.cm.data:
+        """Проверка перед включением учёта коэффициентов."""
+        if self.uc.get() and not self.cm.get_statistics():
             messagebox.showwarning("Предупреждение", "Сначала загрузите файл с коэффициентами")
             self.uc.set(False)
-    
+
+    # -------------------- Применение/отмена --------------------
+
     def load_current_selection(self):
-        for (s, n), v in self.cv.items():
-            is_sel = (s, n) in self.f.sel
-            v.set(is_sel)
-        self.update_series_checkboxes()
+        """Инициализирует выбор из фильтра (по умолчанию там выбраны все)."""
+        sel = getattr(self.f, "sel", set())
+        if not sel:
+            # Если фильтр ничего не содержит — считаем, что выбрано всё
+            for series, tree in self.trees.items():
+                for iid in tree.get_children(""):
+                    n = int(tree.set(iid, "num"))
+                    self.selected.add((series, n))
+                    tree.set(iid, "sel", "✓")
+                self.series_vars[series].set(True)
+        else:
+            # Восстановить из фильтра
+            for series, tree in self.trees.items():
+                for iid in tree.get_children(""):
+                    n = int(tree.set(iid, "num"))
+                    key = (series, n)
+                    is_sel = key in sel
+                    if is_sel:
+                        self.selected.add(key)
+                    tree.set(iid, "sel", "✓" if is_sel else "")
+                self.series_vars[series].set(self._series_all_selected(series, self.selected))
         self.update_selection_count()
-    
+
     def apply_selection(self):
-        sel = []
-        for (s, n), v in self.cv.items():
-            if v.get():
-                sel.append((s, n))
+        """Сохранить выбор и закрыть диалог."""
+        # Без сортировки: состав и порядок определит внешний код (как вы и просили)
+        sel = list(self.selected)
         self.f.set_selected_locomotives(sel)
         self.res = {
-            'selected_locomotives': sel,
-            'use_coefficients': self.uc.get(),
-            'exclude_low_work': self.exclude_low_work.get(),
-            'coefficients_manager': self.cm
+            "selected_locomotives": sel,
+            "use_coefficients": self.uc.get(),
+            "exclude_low_work": self.exclude_low_work.get(),
+            "coefficients_manager": self.cm,
         }
         self.d.destroy()
-    
+        
     def cancel(self):
+        """Отменить изменения и закрыть диалог."""
         self.res = None
         self.d.destroy()
+
+    def update_coefficients_in_place(self):
+        """Обновляет только колонку 'Коэффициент' и цвет строк без пересоздания вкладок."""
+        # Обновляем коэффициенты по всем сериям и строкам
+        for series, tree in self.trees.items():
+            # Теги окраски уже сконфигурированы в _build_series_tab
+            for iid in tree.get_children(""):
+                number = int(tree.set(iid, "num"))
+                coef = self.cm.get_coefficient(series, number)
+                coef_text = f"{coef:.3f}" if coef != 1.0 else "-"
+                tag = "above_norm" if coef > 1.05 else "below_norm" if coef < 0.95 else "norm"
+                tree.set(iid, "coef", coef_text)
+                tree.item(iid, tags=(tag,))  # обновляем цветовую метку только для этой строки

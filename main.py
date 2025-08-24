@@ -101,7 +101,6 @@ def check_file_structure():
         'core/norm_storage.py',
         'dialogs/__init__.py',
         'dialogs/selector.py',
-        'dialogs/editor.py',
         'gui/__init__.py',
         'gui/interface.py'
     ]
