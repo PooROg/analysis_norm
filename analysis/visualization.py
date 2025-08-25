@@ -384,12 +384,11 @@ class PlotBuilder:
     
     def _add_route_points(self, fig: go.Figure, routes_df: pd.DataFrame, 
                         norm_functions: Dict, norm_types_used: Set[str]) -> None:
-        """Добавляет точки маршрутов на верхний график."""
-        # Группируем по статусам
+        """Добавляет точки маршрутов - ИСПРАВЛЕННАЯ ВЕРСИЯ."""
         status_colors = {
             "Экономия сильная": "darkgreen",
             "Экономия средняя": "green",
-            "Экономия слабая": "lightgreen",
+            "Экономия слабая": "lightgreen", 
             "Норма": "blue",
             "Перерасход слабый": "orange",
             "Перерасход средний": "darkorange",
@@ -401,17 +400,17 @@ class PlotBuilder:
             if status_routes.empty:
                 continue
             
-            # Обрабатываем точки для каждого типа нормы
             for norm_type in norm_types_used:
                 x_vals, y_vals, texts, custom = [], [], [], []
                 
                 for _, row in status_routes.iterrows():
+                    # ИСПРАВЛЕНО: Используем исходные значения участка
                     point_data = self._process_route_point(row, norm_functions, norm_type)
                     if not point_data:
                         continue
                     
                     x_vals.append(point_data["x"])
-                    y_vals.append(point_data["y"])
+                    y_vals.append(point_data["y"])  # ← Теперь это исходный "Факт уд"
                     texts.append(point_data["hover"])
                     custom.append(point_data["custom_data"])
                 
@@ -420,7 +419,7 @@ class PlotBuilder:
                     fig.add_trace(
                         go.Scatter(
                             x=x_vals, y=y_vals,
-                            mode="markers",
+                            mode="markers", 
                             name=f"{status}{norm_type_suffix}",
                             marker=dict(color=color, size=6, opacity=0.7),
                             customdata=custom,
@@ -461,50 +460,281 @@ class PlotBuilder:
     
     def _process_route_point(self, row: pd.Series, norm_functions: Dict, 
                             target_norm_type: str = None) -> Optional[Dict]:
-        """Обрабатывает одну точку маршрута."""
-        norm_number = row.get("Номер нормы")
-        if pd.isna(norm_number):
+        """Обрабатывает одну точку маршрута для построения графика.
+        
+        Args:
+            row: Строка данных маршрута из DataFrame
+            norm_functions: Словарь функций интерполяции норм 
+            target_norm_type: Фильтр по типу нормы ("Вес" или "Нажатие")
+        
+        Returns:
+            Dict с координатами точки и данными для hover/modal или None если точка невалидна
+        """
+        try:
+            # 1. Проверяем наличие номера нормы
+            norm_number = row.get("Номер нормы")
+            if pd.isna(norm_number):
+                logger.debug("Пропущена точка: отсутствует номер нормы")
+                return None
+            
+            # 2. Получаем функцию интерполяции для данной нормы
+            norm_str = str(safe_int(norm_number))
+            norm_func_data = norm_functions.get(norm_str)
+            if not norm_func_data:
+                logger.debug("Пропущена точка: норма %s не найдена в функциях", norm_str)
+                return None
+            
+            # 3. Проверяем соответствие типа нормы (если задан фильтр)
+            norm_type = norm_func_data.get("norm_type", "Нажатие")
+            if target_norm_type and norm_type != target_norm_type:
+                logger.debug("Пропущена точка: тип нормы %s не соответствует фильтру %s", norm_type, target_norm_type)
+                return None
+            
+            # 4. Вычисляем X координату (параметр нормирования)
+            if norm_type == "Вес":
+                x_val = self._calculate_weight_parameter(row)
+                param_label = "Вес поезда БРУТТО"
+            else:
+                x_val = self._calculate_axle_load_parameter(row)
+                param_label = "Нажатие на ось"
+            
+            if not x_val or x_val <= 0:
+                logger.debug("Пропущена точка: невалидный параметр нормирования x=%.2f", x_val or 0)
+                return None
+            
+            # 5. ИСПРАВЛЕНО: Получаем Y координату - ИСХОДНЫЙ "Факт уд" из участка
+            y_val_fact_ud = safe_float(row.get("Факт уд"))
+            if not y_val_fact_ud or y_val_fact_ud <= 0:
+                logger.debug("Пропущена точка: невалидный 'Факт уд' = %.2f", y_val_fact_ud or 0)
+                return None
+            
+            # 6. ИСПРАВЛЕНО: Получаем исходную норму участка для корректного hover
+            y_val_norma = safe_float(row.get("Уд. норма, норма на 1 час ман. раб."))
+            if not y_val_norma or y_val_norma <= 0:
+                logger.debug("Предупреждение: невалидная 'Уд. норма' = %.2f для маршрута", y_val_norma or 0)
+                y_val_norma = 0.0  # Не блокируем точку, но помечаем проблему
+            
+            # 7. Создаем полные данные для модального окна и переключателя режимов
+            try:
+                full_custom_data = self._build_full_custom_data_safe(row)
+            except Exception as e:
+                logger.error("Ошибка создания custom_data для маршрута %s: %s", row.get("Номер маршрута"), e)
+                # Создаем минимальные данные для предотвращения краха
+                full_custom_data = {
+                    "route_number": str(row.get("Номер маршрута", "ERROR")),
+                    "route_date": str(row.get("Дата маршрута", "ERROR")),
+                    "error": "data_creation_failed",
+                    "all_sections": [],
+                    "rashod_fact": 0.0,
+                    "rashod_norm": 0.0,
+                    "ud_norma_original": y_val_norma,
+                    "coefficient_route": 1.0
+                }
+            
+            # 8. Создаем hover-текст с правильными значениями
+            hover_text = self._build_route_hover_corrected(
+                row, norm_str, x_val, y_val_fact_ud, y_val_norma, param_label
+            )
+            
+            # 9. Логируем успешную обработку точки
+            logger.debug("Обработана точка: маршрут %s, норма %s, x=%.2f, y=%.2f", 
+                        row.get("Номер маршрута"), norm_str, x_val, y_val_fact_ud)
+            
+            # 10. Возвращаем данные точки
+            return {
+                "x": float(x_val),                    # X координата (параметр нормирования)
+                "y": float(y_val_fact_ud),           # Y координата (исходный "Факт уд")
+                "hover": hover_text,                  # Текст при наведении мыши
+                "custom_data": full_custom_data       # Полные данные для модального окна
+            }
+            
+        except Exception as e:
+            logger.error("Критическая ошибка в _process_route_point для маршрута %s: %s", 
+                        row.get("Номер маршрута", "UNKNOWN"), e, exc_info=True)
+            return None
+
+    def _build_full_custom_data_safe(self, row: pd.Series) -> Dict:
+        """Безопасная версия создания полных данных маршрута."""
+        try:
+            # Базовые данные маршрута
+            route_number = str(row.get("Номер маршрута", "N/A"))
+            route_date = str(row.get("Дата маршрута", "N/A"))
+            
+            # Данные текущего участка
+            fact_ud = safe_float(row.get("Факт уд"), 0.0)
+            ud_norma = safe_float(row.get("Уд. норма, норма на 1 час ман. раб."), 0.0)
+            rashod_fact = safe_float(row.get("Расход фактический"), 0.0)
+            rashod_norm = safe_float(row.get("Расход по норме"), 0.0)
+            
+            # Попытка получить данные всего маршрута
+            rashod_fact_total = rashod_fact  # По умолчанию = текущий участок
+            rashod_norm_total = rashod_norm   # По умолчанию = текущий участок
+            
+            try:
+                # Пытаемся получить суммарные данные по всему маршруту
+                analyzer = getattr(self, '_analyzer', None)
+                if analyzer and hasattr(analyzer, 'routes_df') and analyzer.routes_df is not None:
+                    same_route = analyzer.routes_df[
+                        (analyzer.routes_df['Номер маршрута'] == row.get("Номер маршрута")) &
+                        (analyzer.routes_df['Дата маршрута'] == row.get("Дата маршрута"))
+                    ]
+                    if not same_route.empty:
+                        rashod_fact_total = same_route['Расход фактический'].sum()
+                        rashod_norm_total = same_route['Расход по норме'].sum()
+            except Exception:
+                pass  # Используем данные текущего участка
+            
+            # Расчет коэффициентов
+            coef_section = fact_ud / ud_norma if (fact_ud > 0 and ud_norma > 0) else 1.0
+            coef_route = rashod_fact_total / rashod_norm_total if (rashod_fact_total > 0 and rashod_norm_total > 0) else 1.0
+            expected_nf = coef_route * ud_norma if (coef_route > 0 and ud_norma > 0) else 0.0
+            
+            # Простая структура участков
+            sections = [
+                {
+                    "section_name": str(row.get("Наименование участка", "N/A")),
+                    "netto": str(row.get("НЕТТО", "N/A")),
+                    "brutto": str(row.get("БРУТТО", "N/A")),
+                    "osi": str(row.get("ОСИ", "N/A")),
+                    "norm_number": str(row.get("Номер нормы", "N/A")),
+                    "rashod_fact": str(rashod_fact) if rashod_fact > 0 else "N/A",
+                    "rashod_norm": str(rashod_norm) if rashod_norm > 0 else "N/A",
+                    "fact_ud": str(fact_ud) if fact_ud > 0 else "N/A",
+                    "ud_norma": str(ud_norma) if ud_norma > 0 else "N/A",
+                    "use_red_color": bool(row.get('USE_RED_COLOR', False)),
+                    "use_red_rashod": bool(row.get('USE_RED_RASHOD', False))
+                }
+            ]
+            
+            return {
+                # Основная информация
+                "route_number": route_number,
+                "route_date": route_date,
+                "trip_date": str(row.get("Дата поездки", "N/A")),
+                "driver_tab": str(row.get("Табельный машиниста", "N/A")),
+                "locomotive_series": str(row.get("Серия локомотива", "N/A")),
+                "locomotive_number": str(row.get("Номер локомотива", "N/A")),
+                
+                # Суммарные расходы для режима Н/Ф
+                "rashod_fact_total": float(rashod_fact_total),
+                "rashod_norm_total": float(rashod_norm_total),
+                "rashod_fact": float(rashod_fact_total),  # Дублируем для совместимости
+                "rashod_norm": float(rashod_norm_total),   # Дублируем для совместимости
+                
+                # Данные участка для режима Н/Ф
+                "ud_norma_original": float(ud_norma),
+                "fact_ud_original_section": float(fact_ud),
+                
+                # Коэффициенты
+                "coefficient_section": float(coef_section),
+                "coefficient_route": float(coef_route), 
+                "expected_nf_y": float(expected_nf),
+                
+                # Анализ
+                "norm_interpolated": safe_float(row.get("Норма интерполированная"), 0.0),
+                "deviation_percent": safe_float(row.get("Отклонение, %"), 0.0),
+                "status": str(row.get("Статус", "N/A")),
+                "n_equals_f": str(row.get("Н=Ф", "N/A")),
+                
+                # Участки
+                "all_sections": sections,
+                
+                # Отладка
+                "debug_info": {
+                    "fact_ud_current": float(fact_ud),
+                    "ud_norma_current": float(ud_norma),
+                    "rashod_fact_total": float(rashod_fact_total),
+                    "rashod_norm_total": float(rashod_norm_total),
+                },
+                
+                "use_red_rashod": bool(row.get("USE_RED_RASHOD", False)),
+                "totals": {}
+            }
+            
+        except Exception as e:
+            logger.error("Ошибка в _build_full_custom_data_safe: %s", e)
+            # Минимальные данные при ошибке
+            return {
+                "route_number": str(row.get("Номер маршрута", "ERROR")),
+                "route_date": str(row.get("Дата маршрута", "ERROR")),
+                "error": str(e),
+                "all_sections": [],
+                "rashod_fact": 0.0,
+                "rashod_norm": 0.0,
+                "ud_norma_original": 0.0,
+                "coefficient_route": 1.0,
+                "expected_nf_y": 0.0,
+                "debug_info": {"error": "failed"}
+            }
+
+    def _build_route_hover_corrected(self, row: pd.Series, norm_str: str, 
+                                    x_val: float, fact_ud: float, norma_ud: float, 
+                                    param_label: str) -> str:
+        """Создает ПРАВИЛЬНЫЙ hover-текст с исходными значениями участка."""
+        route_number = row.get("Номер маршрута", "N/A")
+        route_date = row.get("Дата маршрута", "N/A")
+        section_name = row.get("Наименование участка", "N/A")
+        series = row.get("Серия локомотива", "N/A")
+        number = row.get("Номер локомотива", "N/A")
+        
+        # ИСПРАВЛЕНО: Показываем ИСХОДНЫЕ значения участка
+        deviation = format_number(row.get("Отклонение, %"))
+        rashod_fact = format_number(row.get("Расход фактический"))
+        rashod_norm = format_number(row.get("Расход по норме"))
+        
+        return (
+            f"<b>Маршрут №{route_number} | {route_date}</b><br>"
+            f"Участок: {section_name}<br>"
+            f"Локомотив: {series} №{number}<br>"
+            f"{param_label}: {x_val:.1f}<br>"
+            f"Факт: {format_number(fact_ud)}<br>"           # ← ИСХОДНЫЙ "Факт уд" = 49.19
+            f"Норма: {format_number(norma_ud)}<br>"         # ← ИСХОДНАЯ "Уд. норма" = 22.802
+            f"Расход фактический: {rashod_fact}<br>"
+            f"Расход по норме: {rashod_norm}<br>"
+            f"Отклонение: {deviation}%<br>"
+            f"Номер нормы: {norm_str}"
+        )
+
+    def _calculate_actual_specific_consumption_for_work(self, row: pd.Series) -> Optional[float]:
+        """Вычисляет фактический удельный расход на работу."""
+        # Базовый расход фактический
+        rashod_fact = safe_float(row.get("Расход фактический"))
+        if not rashod_fact:
             return None
         
-        norm_str = str(int(norm_number))
-        norm_func_data = norm_functions.get(norm_str)
-        if not norm_func_data:
+        # Вычитаемые нормируемые составляющие
+        deductions = [
+            safe_float(row.get("Норма на одиночное")),
+            safe_float(row.get("Простой с бригадой, мин., всего")),
+            safe_float(row.get("Простой с бригадой, мин., норма")),
+            safe_float(row.get("Маневры, мин., всего")),
+            safe_float(row.get("Маневры, мин., норма")),
+            safe_float(row.get("Трогание с места, случ., всего")),
+            safe_float(row.get("Трогание с места, случ., норма")),
+            safe_float(row.get("Нагон опозданий, мин., всего")),
+            safe_float(row.get("Нагон опозданий, мин., норма")),
+            safe_float(row.get("Ограничения скорости, случ., всего")),
+            safe_float(row.get("Ограничения скорости, случ., норма")),
+            safe_float(row.get("На пересылаемые л-вы, всего")),
+            safe_float(row.get("На пересылаемые л-вы, норма")),
+        ]
+        
+        # Вычисляем факт на работу
+        fact_na_rabotu = rashod_fact - sum(deductions)
+        
+        # Переводим в удельные единицы (делим на ткм брутто / 10000)
+        tkm_brutto = safe_float(row.get("Ткм брутто"))
+        if tkm_brutto <= 0:
             return None
         
-        # Проверяем соответствие типа нормы (если указан)
-        norm_type = norm_func_data.get("norm_type", "Нажатие")
-        if target_norm_type and norm_type != target_norm_type:
-            return None
+        tkm_10000 = tkm_brutto / 10000.0
+        fact_udelnyj_na_rabotu = fact_na_rabotu / tkm_10000
         
-        # Определяем параметр нормирования
-        if norm_type == "Вес":
-            x_val = self._calculate_weight_parameter(row)
-            param_label = "Вес БРУТТО"
-        else:
-            x_val = self._calculate_axle_load_parameter(row)
-            param_label = "Нажатие на ось"
+        logger.debug("Расчет удельного на работу: rashod_fact=%.1f, deductions_sum=%.1f, fact_na_rabotu=%.1f, tkm_10000=%.1f, result=%.3f",
+                    rashod_fact, sum(deductions), fact_na_rabotu, tkm_10000, fact_udelnyj_na_rabotu)
         
-        if not x_val or x_val <= 0:
-            return None
-        
-        # Фактическое значение - ВАЖНО: берем "Факт уд" в первую очередь
-        y_val = safe_float(row.get("Факт уд"))
-        if not y_val:
-            y_val = safe_float(row.get("Расход фактический"))
-        
-        if not y_val:
-            return None
-        
-        # ИСПРАВЛЕНО: получаем полные данные маршрута но передаем двумя способами
-        full_data = self._build_full_custom_data(row)
-        
-        return {
-            "x": x_val,
-            "y": y_val,
-            "hover": self._build_route_hover(row, norm_str, x_val, y_val, param_label),
-            "custom_data": full_data  # Полные данные для модального окна и переключателя
-        }
-    
+        return fact_udelnyj_na_rabotu if fact_udelnyj_na_rabotu > 0 else None   
+
     def _build_route_hover(self, row: pd.Series, norm_str: str, x_val: float, 
                         y_val: float, param_label: str) -> str:
         """Создает hover-текст для точки маршрута."""
@@ -721,168 +951,67 @@ class PlotBuilder:
         return html_content + f"\n{controls_html}\n{js_embed}"
     
     def _build_full_custom_data(self, row: pd.Series) -> Dict:
-        """Создает полные данные для модального окна с всеми участками маршрута."""
-        route_number = row.get("Номер маршрута")
-        route_date = row.get("Дата маршрута")
-        
-        # Получаем все участки этого маршрута
-        all_sections_data = []
-        
-        # Поля для суммирования
-        totals = {
-            'tkm_brutto': 0.0,
-            'km': 0.0, 
-            'pr': 0.0,
-            'rashod_fact': 0.0,
-            'rashod_norm': 0.0,
-            'ud_norma': 0.0,
-            'axle_load': 0.0,
-            'norma_work': 0.0,
-            'fact_ud': 0.0,
-            'fact_work': 0.0,
-            'norma_single': 0.0,
-            'idle_brigada_total': 0.0,
-            'idle_brigada_norm': 0.0,
-            'manevr_total': 0.0,
-            'manevr_norm': 0.0,
-            'start_total': 0.0,
-            'start_norm': 0.0,
-            'delay_total': 0.0,
-            'delay_norm': 0.0,
-            'speed_limit_total': 0.0,
-            'speed_limit_norm': 0.0,
-            'transfer_loco_total': 0.0,
-            'transfer_loco_norm': 0.0,
-        }
-        
-        # ИСПРАВЛЕНО: правильное получение всех участков маршрута
+        """Упрощенная версия для отладки проблемы сериализации."""
         try:
-            # Получаем analyzer через ссылку
-            analyzer = getattr(self, '_analyzer', None)
-            if analyzer and hasattr(analyzer, 'routes_df') and analyzer.routes_df is not None:
-                same_route_data = analyzer.routes_df[
-                    (analyzer.routes_df['Номер маршрута'] == route_number) &
-                    (analyzer.routes_df['Дата маршрута'] == route_date)
-                ].copy()
-            else:
-                # Fallback: только текущий участок
-                same_route_data = pd.DataFrame([row])
+            route_number = row.get("Номер маршрута", "N/A")
+            route_date = row.get("Дата маршрута", "N/A")
+            
+            # Простые базовые данные без сложной обработки
+            route_data = {
+                "route_number": str(route_number),
+                "route_date": str(route_date),
+                "trip_date": str(row.get("Дата поездки", "N/A")),
+                "driver_tab": str(row.get("Табельный машиниста", "N/A")),
+                "locomotive_series": str(row.get("Серия локомотива", "N/A")),
+                "locomotive_number": str(row.get("Номер локомотива", "N/A")),
                 
-            logger.debug("Найдено %d участков для маршрута %s от %s", len(same_route_data), route_number, route_date)
-        except Exception as e:
-            logger.error("Ошибка получения данных маршрута: %s", e)
-            same_route_data = pd.DataFrame([row])
-        
-        # Обрабатываем все найденные участки маршрута
-        for idx, (_, section_row) in enumerate(same_route_data.iterrows()):
-            section_info = {
-                'section_name': section_row.get('Наименование участка', 'N/A'),
-                'netto': section_row.get('НЕТТО', 'N/A'),
-                'brutto': section_row.get('БРУТТО', 'N/A'),
-                'osi': section_row.get('ОСИ', 'N/A'),
-                'norm_number': section_row.get('Номер нормы', 'N/A'),
-                'movement_type': section_row.get('Дв. тяга', 'N/A'),
-                'tkm_brutto': section_row.get('Ткм брутто', 'N/A'),
-                'km': section_row.get('Км', 'N/A'),
-                'pr': section_row.get('Пр.', 'N/A'),
-                'rashod_fact': section_row.get('Расход фактический', 'N/A'),
-                'rashod_norm': section_row.get('Расход по норме', 'N/A'),
-                'ud_norma': section_row.get('Уд. норма, норма на 1 час ман. раб.', 'N/A'),
-                'axle_load': section_row.get('Нажатие на ось', 'N/A'),
-                'norma_work': section_row.get('Норма на работу', 'N/A'),
-                'fact_ud': section_row.get('Факт уд', 'N/A'),
-                'fact_work': section_row.get('Факт на работу', 'N/A'),
-                'norma_single': section_row.get('Норма на одиночное', 'N/A'),
-                'idle_brigada_total': section_row.get('Простой с бригадой, мин., всего', 'N/A'),
-                'idle_brigada_norm': section_row.get('Простой с бригадой, мин., норма', 'N/A'),
-                'manevr_total': section_row.get('Маневры, мин., всего', 'N/A'),
-                'manevr_norm': section_row.get('Маневры, мин., норма', 'N/A'),
-                'start_total': section_row.get('Трогание с места, случ., всего', 'N/A'),
-                'start_norm': section_row.get('Трогание с места, случ., норма', 'N/A'),
-                'delay_total': section_row.get('Нагон опозданий, мин., всего', 'N/A'),
-                'delay_norm': section_row.get('Нагон опозданий, мин., норма', 'N/A'),
-                'speed_limit_total': section_row.get('Ограничения скорости, случ., всего', 'N/A'),
-                'speed_limit_norm': section_row.get('Ограничения скорости, случ., норма', 'N/A'),
-                'transfer_loco_total': section_row.get('На пересылаемые л-вы, всего', 'N/A'),
-                'transfer_loco_norm': section_row.get('На пересылаемые л-вы, норма', 'N/A'),
-                'duplicates_count': section_row.get('Количество дубликатов маршрута', 'N/A'),
-                'use_red_color': bool(section_row.get('USE_RED_COLOR', False)),
-                'use_red_rashod': bool(section_row.get('USE_RED_RASHOD', False))
+                # Простые числовые значения
+                "rashod_fact_total": float(row.get("Расход фактический", 0) or 0),
+                "rashod_norm_total": float(row.get("Расход по норме", 0) or 0),
+                "fact_ud_original_section": float(row.get("Факт уд", 0) or 0),
+                "ud_norma_original": float(row.get("Уд. норма, норма на 1 час ман. раб.", 0) or 0),
+                
+                # Простые коэффициенты
+                "coefficient_section": 1.0,
+                "coefficient_route": 1.0,
+                "expected_nf_y": 0.0,
+                
+                # Статус и отклонение
+                "status": str(row.get("Статус", "N/A")),
+                "deviation_percent": float(row.get("Отклонение, %", 0) or 0),
+                "norm_interpolated": float(row.get("Норма интерполированная", 0) or 0),
+                "n_equals_f": str(row.get("Н=Ф", "N/A")),
+                
+                # Минимальные данные участков
+                "all_sections": [
+                    {
+                        "section_name": str(row.get("Наименование участка", "N/A")),
+                        "rashod_fact": str(row.get("Расход фактический", "N/A")),
+                        "rashod_norm": str(row.get("Расход по норме", "N/A")),
+                        "fact_ud": str(row.get("Факт уд", "N/A")),
+                        "ud_norma": str(row.get("Уд. норма, норма на 1 час ман. раб.", "N/A")),
+                        "use_red_color": False,
+                        "use_red_rashod": False
+                    }
+                ],
+                
+                # Простая отладочная информация
+                "debug_info": {
+                    "test": "simple_data_works"
+                },
+                
+                "use_red_rashod": False,
+                "totals": {}
             }
             
-            all_sections_data.append(section_info)
+            logger.info("Созданы простые данные для маршрута %s", route_number)
+            return route_data
             
-            # Суммируем числовые значения
-            numeric_fields = [
-                ('Ткм брутто', 'tkm_brutto'),
-                ('Км', 'km'),
-                ('Пр.', 'pr'),
-                ('Расход фактический', 'rashod_fact'),
-                ('Расход по норме', 'rashod_norm'),
-                ('Уд. норма, норма на 1 час ман. раб.', 'ud_norma'),
-                ('Нажатие на ось', 'axle_load'),
-                ('Норма на работу', 'norma_work'),
-                ('Факт уд', 'fact_ud'),
-                ('Факт на работу', 'fact_work'),
-                ('Норма на одиночное', 'norma_single'),
-                ('Простой с бригадой, мин., всего', 'idle_brigada_total'),
-                ('Простой с бригадой, мин., норма', 'idle_brigada_norm'),
-                ('Маневры, мин., всего', 'manevr_total'),
-                ('Маневры, мин., норма', 'manevr_norm'),
-                ('Трогание с места, случ., всего', 'start_total'),
-                ('Трогание с места, случ., норма', 'start_norm'),
-                ('Нагон опозданий, мин., всего', 'delay_total'),
-                ('Нагон опозданий, мин., норма', 'delay_norm'),
-                ('Ограничения скорости, случ., всего', 'speed_limit_total'),
-                ('Ограничения скорости, случ., норма', 'speed_limit_norm'),
-                ('На пересылаемые л-вы, всего', 'transfer_loco_total'),
-                ('На пересылаемые л-вы, норма', 'transfer_loco_norm'),
-            ]
-            
-            for field_name, total_key in numeric_fields:
-                val = safe_float(section_row.get(field_name))
-                if val > 0:
-                    totals[total_key] += val
-        
-        logger.debug("Суммарные расходы маршрута %s: факт=%.2f, норма=%.2f", 
-                    route_number, totals['rashod_fact'], totals['rashod_norm'])
-        
-        # Создаем итоговую запись
-        route_data = {
-            # Основная информация
-            "route_number": route_number or "N/A",
-            "route_date": route_date or "N/A",
-            "trip_date": row.get("Дата поездки", "N/A"),
-            "driver_tab": row.get("Табельный машиниста", "N/A"),
-            "locomotive_series": row.get("Серия локомотива", "N/A"),
-            "locomotive_number": row.get("Номер локомотива", "N/A"),
-            
-            # ИСПРАВЛЕНО: суммарные расходы из всех участков
-            "rashod_fact_total": totals['rashod_fact'] if totals['rashod_fact'] > 0 else "N/A",
-            "rashod_norm_total": totals['rashod_norm'] if totals['rashod_norm'] > 0 else "N/A",
-            
-            # Все участки маршрута
-            "all_sections": all_sections_data,
-            
-            # Данные текущего участка (для анализа)
-            "norm_interpolated": safe_float(row.get("Норма интерполированная")),
-            "deviation_percent": safe_float(row.get("Отклонение, %")),
-            "status": row.get("Статус", "N/A"),
-            "n_equals_f": row.get("Н=Ф", "N/A"),
-            
-            # КРИТИЧНО для переключателя режимов - СУММАРНЫЕ значения
-            "rashod_fact": totals['rashod_fact'],
-            "rashod_norm": totals['rashod_norm'],
-            
-            # Коэффициенты (если есть)
-            "coefficient": safe_float(row.get("Коэффициент"), 1.0) if pd.notna(row.get("Коэффициент")) else None,
-            "fact_ud_original": safe_float(row.get("Факт. удельный исходный")) if pd.notna(row.get("Факт. удельный исходный")) else None,
-            
-            # Флаги форматирования
-            "use_red_rashod": bool(row.get("USE_RED_RASHOD", False)),
-            
-            # Итоговые суммы для таблицы
-            "totals": totals
-        }
-        
-        return route_data
+        except Exception as e:
+            logger.error("Ошибка в упрощенной версии _build_full_custom_data: %s", e, exc_info=True)
+            return {
+                "route_number": "ERROR",
+                "error": str(e),
+                "all_sections": [],
+                "debug_info": {"error": "function_failed"}
+            }

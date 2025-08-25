@@ -28,17 +28,64 @@ class PlotModeController {
         console.log("Инициализация Plotly...");
         this.plotlyDiv.on('plotly_click', (data) => this.handlePointClick(data));
         
-        // ИСПРАВЛЕНО: сохранение исходных данных
-        if (this.plotlyDiv.data) {
-            this.plotlyDiv.data.forEach((trace, index) => {
-                this.originalData[index] = {
-                    x: [...(trace.x || [])],
-                    y: [...(trace.y || [])],
-                    customdata: trace.customdata ? JSON.parse(JSON.stringify(trace.customdata)) : null
-                };
-                console.log(`Сохранены данные трассы ${index}: ${trace.x?.length || 0} точек`);
-            });
-            console.log("Исходные данные сохранены для", Object.keys(this.originalData).length, "трасс");
+        // ИСПРАВЛЕНО: принудительное сохранение ВСЕХ трасс
+        this.saveOriginalData();
+    }
+
+    saveOriginalData() {
+        console.log("=== ПРИНУДИТЕЛЬНОЕ СОХРАНЕНИЕ ВСЕХ ТРАСС ===");
+        
+        if (!this.plotlyDiv || !this.plotlyDiv.data) {
+            console.log("❌ Данные графика недоступны, повторная попытка через 1 секунду");
+            setTimeout(() => this.saveOriginalData(), 1000);
+            return;
+        }
+    
+        console.log("Всего трасс для сохранения:", this.plotlyDiv.data.length);
+        
+        // ОЧИЩАЕМ старые данные
+        this.originalData = {};
+        
+        // ПРИНУДИТЕЛЬНО сохраняем ВСЕ трассы
+        this.plotlyDiv.data.forEach((trace, index) => {
+            console.log(`Сохранение трассы ${index}:`);
+            console.log(`  - Имя: ${trace.name || 'undefined'}`);
+            console.log(`  - Режим: ${trace.mode || 'undefined'}`);
+            console.log(`  - X точек: ${trace.x?.length || 0}`);
+            console.log(`  - Y точек: ${trace.y?.length || 0}`);
+            console.log(`  - customdata: ${trace.customdata ? 'есть' : 'нет'} (${trace.customdata?.length || 0} элементов)`);
+            
+            // ПРИНУДИТЕЛЬНОЕ сохранение даже пустых трасс
+            this.originalData[index] = {
+                x: trace.x ? [...trace.x] : [],
+                y: trace.y ? [...trace.y] : [],
+                customdata: trace.customdata ? JSON.parse(JSON.stringify(trace.customdata)) : null,
+                name: trace.name || `trace_${index}`,
+                mode: trace.mode || 'markers'
+            };
+            
+            console.log(`  ✅ Сохранено: x=${this.originalData[index].x.length}, y=${this.originalData[index].y.length}`);
+        });
+        
+        console.log(`🎉 Все ${Object.keys(this.originalData).length} трасс сохранены принудительно`);
+        
+        // ПРОВЕРЯЕМ что трассы маршрутов сохранились
+        const routeTraces = [];
+        Object.keys(this.originalData).forEach(index => {
+            const data = this.originalData[index];
+            const name = data.name || '';
+            if (name.includes('Экономия') || name.includes('Перерасход') || name === 'Норма') {
+                routeTraces.push(`${index}: ${name} (${data.y.length} точек)`);
+            }
+        });
+        
+        console.log("🔍 Трассы маршрутов в originalData:", routeTraces);
+        
+        if (routeTraces.length === 0) {
+            console.log("⚠️ КРИТИЧНО: Трассы маршрутов не найдены, повтор через 2 секунды");
+            setTimeout(() => this.saveOriginalData(), 2000);
+        } else {
+            console.log("✅ Трассы маршрутов успешно сохранены");
         }
     }
 
@@ -77,82 +124,122 @@ class PlotModeController {
     switchDisplayMode() {
         const mode = document.querySelector('input[name="display_mode"]:checked')?.value;
         if (!mode || !this.plotlyDiv || !this.originalData) {
-            console.log("Переключение режима невозможно:", { mode, plotlyDiv: !!this.plotlyDiv, originalData: !!Object.keys(this.originalData).length });
+            console.log("Переключение режима невозможно:", { 
+                mode, 
+                plotlyDiv: !!this.plotlyDiv, 
+                originalData: !!Object.keys(this.originalData).length 
+            });
+            return;
+        }
+    
+        // ДОБАВЛЕНО: Проверка что исходные данные актуальны
+        if (Object.keys(this.originalData).length < this.plotlyDiv.data.length) {
+            console.log("⚠️ КРИТИЧНО: Исходные данные неполные, принудительное пересохранение");
+            this.saveOriginalData();
+            setTimeout(() => this.switchDisplayMode(), 1000);
             return;
         }
     
         console.log("Переключение на режим:", mode);
+        console.log("Всего трасс в графике:", this.plotlyDiv.data.length);
+        console.log("Исходных данных сохранено:", Object.keys(this.originalData).length);
+        
         const update = {};
         let updatedTraces = 0;
     
         this.plotlyDiv.data.forEach((trace, index) => {
-            if (!this.originalData[index] || !trace.customdata) {
+            console.log(`\n=== Обработка трассы ${index} ===`);
+            console.log("Имя трассы:", trace.name);
+            console.log("Есть исходные данные:", !!this.originalData[index]);
+            console.log("Есть customdata:", !!trace.customdata);
+            
+            // КРИТИЧНО: Проверяем что это трасса маршрутов
+            const traceName = trace.name || '';
+            const isRouteTrace = (
+                traceName.includes('Экономия') || 
+                traceName.includes('Перерасход') || 
+                traceName === 'Норма'
+            ) && !traceName.includes('('); // Исключаем дубли с скобками
+            
+            console.log("Это трасса маршрутов:", isRouteTrace);
+            
+            if (!this.originalData[index]) {
+                console.log(`❌ Трасса ${index} пропущена: нет исходных данных`);
+                return;
+            }
+            
+            if (!isRouteTrace) {
+                console.log(`❌ Трасса ${index} пропущена: не является трассой маршрутов`);
+                return;
+            }
+            
+            if (!trace.customdata) {
+                console.log(`❌ Трасса ${index} пропущена: нет customdata`);
                 return;
             }
     
-            // Проверяем, что это трасса с точками маршрутов
-            if (!trace.name || 
-                trace.name.includes("Норма") || 
-                trace.name.includes("Базовые точки") ||
-                trace.name.includes("Из маршрутов") ||
-                trace.mode === "lines") {
-                return;
-            }
-    
-            console.log(`Обработка трассы ${index}: ${trace.name}, точек: ${trace.customdata.length}`);
+            console.log(`✅ Трасса ${index} проходит все проверки - обрабатываем`);
     
             if (mode === 'nf') {
-                // ИСПРАВЛЕННЫЙ режим Н/Ф с использованием СУММАРНЫХ данных
+                // Режим Н/Ф
                 const newY = this.originalData[index].y.map((originalY, i) => {
                     const customPoint = trace.customdata[i];
-                    if (!customPoint) {
-                        return originalY;
+                    if (!customPoint) return originalY;
+    
+                    const expected_nf_y = this.safeFloat(customPoint.expected_nf_y);
+                    if (expected_nf_y > 0) {
+                        console.log(`Точка ${i}: используем предрасчитанное значение ${expected_nf_y.toFixed(2)}`);
+                        return expected_nf_y;
                     }
     
-                    // ИСПРАВЛЕНО: используем суммарные значения для всего маршрута
-                    const rashod_fact = this.safeFloat(customPoint.rashod_fact_total);
-                    const rashod_norm = this.safeFloat(customPoint.rashod_norm_total);
-                    const norm_interpolated = this.safeFloat(customPoint.norm_interpolated);
+                    const rashod_fact_total = this.safeFloat(customPoint.rashod_fact_total);
+                    const rashod_norm_total = this.safeFloat(customPoint.rashod_norm_total);
+                    const ud_norma_original = this.safeFloat(customPoint.ud_norma_original);
     
-                    // Если нет суммарных данных, используем данные участка
-                    const fact_val = rashod_fact > 0 ? rashod_fact : this.safeFloat(customPoint.rashod_fact);
-                    const norm_val = rashod_norm > 0 ? rashod_norm : this.safeFloat(customPoint.rashod_norm);
-    
-                    if (!fact_val || !norm_val || !norm_interpolated || norm_val <= 0) {
-                        console.log(`Точка ${i}: недостаточно данных (fact_total: ${rashod_fact}, norm_total: ${rashod_norm}, fact: ${fact_val}, norm: ${norm_val}, interp: ${norm_interpolated})`);
-                        return originalY;
+                    if (rashod_fact_total > 0 && rashod_norm_total > 0 && ud_norma_original > 0) {
+                        const adjustedY = (rashod_fact_total / rashod_norm_total) * ud_norma_original;
+                        console.log(`Точка ${i}: расчет ${originalY.toFixed(2)} -> ${adjustedY.toFixed(2)}`);
+                        return adjustedY;
                     }
     
-                    // Правильный расчет процентного отклонения от СУММАРНЫХ значений
-                    const deviationPercent = ((fact_val - norm_val) / norm_val) * 100;
-                    
-                    // Применяем отклонение к интерполированной норме текущего участка
-                    const adjustedY = norm_interpolated * (1 + deviationPercent / 100);
-                    
-                    console.log(`Точка ${i}: маршрут (fact: ${fact_val}, norm: ${norm_val}, откл: ${deviationPercent.toFixed(1)}%) -> ${originalY.toFixed(2)} -> ${adjustedY.toFixed(2)}`);
-                    return adjustedY;
+                    return originalY;
                 });
                 
                 update[`y[${index}]`] = newY;
                 updatedTraces++;
             } else {
-                // Режим "Уд. на работу" - возвращаем исходные значения
+                // Режим "Уд. на работу"
                 update[`y[${index}]`] = [...this.originalData[index].y];
                 updatedTraces++;
             }
         });
     
+        console.log(`\n🔄 Обновляем ${updatedTraces} трасс`);
+        
         if (Object.keys(update).length > 0) {
-            console.log(`Обновляем ${updatedTraces} трасс`);
             try {
                 Plotly.restyle(this.plotlyDiv, update);
-                console.log("График успешно обновлен");
+                console.log("✅ График успешно обновлен");
             } catch (error) {
-                console.error("Ошибка обновления графика:", error);
+                console.error("❌ Ошибка обновления графика:", error);
             }
         } else {
-            console.log("Нет данных для обновления");
+            console.log("❌ Нет данных для обновления");
         }
+    }
+    
+    // Вспомогательная функция для получения удельной нормы из участков
+    getUdNormaFromSections(sections) {
+        if (!sections || !sections.length) return null;
+        
+        // Ищем первый участок с валидной удельной нормой
+        for (let section of sections) {
+            const ud_norma = this.safeFloat(section.ud_norma);
+            if (ud_norma > 0) {
+                return ud_norma;
+            }
+        }
+        return null;
     }
 
     safeFloat(value) {
@@ -168,12 +255,27 @@ class PlotModeController {
 
     handlePointClick(data) {
         if (!data.points?.length) return;
+        
         const customData = data.points[0].customdata;
+        console.log("Тип customData:", typeof customData);
+        console.log("customData:", customData);
+        
         if (!customData) {
-            console.log("Нет customData для точки");
+            console.error("Нет customData для точки");
             return;
         }
-        console.log("Клик по точке, данные:", customData);
+        
+        if (typeof customData === 'string') {
+            console.error("customData является строкой вместо объекта:", customData.substring(0, 200));
+            return;
+        }
+        
+        if (typeof customData !== 'object') {
+            console.error("customData имеет неправильный тип:", typeof customData);
+            return;
+        }
+        
+        console.log("customData корректен, показываем модальное окно");
         this.showFullRouteInfo(customData);
     }
 
@@ -216,10 +318,22 @@ class PlotModeController {
         return `
             <div style="margin-bottom:20px;">
                 <h3>Основная информация</h3>
-                <table style="border-collapse:collapse;width:50%;font-family:Arial;">
+                <table style="border-collapse:collapse;width:70%;font-family:Arial;">
                     ${rows}
                 </table>
             </div>
+        `;
+    }
+        
+    buildTableRow(label, value, isRed = false) {
+        const redStyle = isRed ? 'background-color:#ffcccc;color:#f00;font-weight:bold;' : '';
+        const displayValue = (value !== null && value !== undefined && value !== 'N/A') ? value : '-';
+        
+        return `
+            <tr style="border:1px solid #ddd;">
+                <td style="padding:8px;border:1px solid #ddd;background-color:#f5f5f5;font-weight:bold;">${label}</td>
+                <td style="padding:8px;border:1px solid #ddd;${redStyle}">${displayValue}</td>
+            </tr>
         `;
     }
 
@@ -344,8 +458,30 @@ class PlotModeController {
             ['Н=Ф', c.n_equals_f]
         ];
 
+        // Добавляем коэффициенты для отладки
+        if (c.coefficient_section !== null && c.coefficient_section !== undefined) {
+            analysisFields.push(['Коэффициент участка (Факт/Норма)', c.coefficient_section.toFixed(6)]);
+        }
+        
+        if (c.coefficient_route !== null && c.coefficient_route !== undefined) {
+            analysisFields.push(['Коэффициент маршрута (Расх.факт.всего/Расх.норма.всего)', c.coefficient_route.toFixed(6)]);
+        }
+        
+        if (c.expected_nf_y !== null && c.expected_nf_y !== undefined) {
+            analysisFields.push(['Ожидаемая Y в режиме Н/Ф', c.expected_nf_y.toFixed(3)]);
+        }
+        
+        // Отладочная информация
+        if (c.debug_info) {
+            analysisFields.push(['--- ОТЛАДКА ---', '']);
+            analysisFields.push(['Факт уд (текущий участок)', c.debug_info.fact_ud_current || 'N/A']);
+            analysisFields.push(['Уд. норма (текущий участок)', c.debug_info.ud_norma_current || 'N/A']);
+            analysisFields.push(['Расход факт (всего)', c.debug_info.rashod_fact_total || 'N/A']);
+            analysisFields.push(['Расход норма (всего)', c.debug_info.rashod_norm_total || 'N/A']);
+        }
+
         if (c.coefficient && c.coefficient !== 1.0) {
-            analysisFields.push(['Коэффициент', c.coefficient]);
+            analysisFields.push(['Коэффициент локомотива', c.coefficient]);
             if (c.fact_ud_original) {
                 analysisFields.push(['Факт. удельный исходный', c.fact_ud_original]);
             }
@@ -358,24 +494,14 @@ class PlotModeController {
         return `
             <div style="margin-bottom:20px;">
                 <h3>Результаты анализа (для текущего участка)</h3>
-                <table style="border-collapse:collapse;width:50%;font-family:Arial;">
+                <table style="border-collapse:collapse;width:70%;font-family:Arial;">
                     ${rows}
                 </table>
             </div>
         `;
     }
 
-    buildTableRow(label, value, isRed = false) {
-        const redStyle = isRed ? 'background-color:#ffcccc;color:#f00;font-weight:bold;' : '';
-        const displayValue = (value !== null && value !== undefined && value !== 'N/A') ? value : '-';
-        
-        return `
-            <tr style="border:1px solid #ddd;">
-                <td style="padding:8px;border:1px solid #ddd;background-color:#f5f5f5;font-weight:bold;">${label}</td>
-                <td style="padding:8px;border:1px solid #ddd;${redStyle}">${displayValue}</td>
-            </tr>
-        `;
-    }
+    
 }
 
 // Инициализация
