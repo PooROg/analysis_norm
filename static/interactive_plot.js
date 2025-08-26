@@ -1,4 +1,3 @@
-// static/interactive_plot.js
 class PlotModeController {
     constructor() {
         this.plotlyDiv = null;
@@ -32,6 +31,7 @@ class PlotModeController {
         this.saveOriginalData();
     }
 
+    // ИСПРАВЛЕННЫЙ метод - основная проблема была здесь
     saveOriginalData() {
         console.log("=== ПРИНУДИТЕЛЬНОЕ СОХРАНЕНИЕ ВСЕХ ТРАСС ===");
         
@@ -55,11 +55,11 @@ class PlotModeController {
             console.log(`  - Y точек: ${trace.y?.length || 0}`);
             console.log(`  - customdata: ${trace.customdata ? 'есть' : 'нет'} (${trace.customdata?.length || 0} элементов)`);
             
-            // ПРИНУДИТЕЛЬНОЕ сохранение даже пустых трасс
+            // ИСПРАВЛЕНО: Безопасное копирование массивов Plotly
             this.originalData[index] = {
-                x: trace.x ? [...trace.x] : [],
-                y: trace.y ? [...trace.y] : [],
-                customdata: trace.customdata ? JSON.parse(JSON.stringify(trace.customdata)) : null,
+                x: this.safeArrayCopy(trace.x),
+                y: this.safeArrayCopy(trace.y),
+                customdata: this.safeDeepCopy(trace.customdata),
                 name: trace.name || `trace_${index}`,
                 mode: trace.mode || 'markers'
             };
@@ -86,6 +86,54 @@ class PlotModeController {
             setTimeout(() => this.saveOriginalData(), 2000);
         } else {
             console.log("✅ Трассы маршрутов успешно сохранены");
+        }
+    }
+
+    // НОВЫЙ метод: Безопасное копирование массивов Plotly
+    safeArrayCopy(data) {
+        if (!data) return [];
+        
+        try {
+            // Проверяем является ли это массивом
+            if (Array.isArray(data)) {
+                return [...data];
+            }
+            
+            // Проверяем TypedArray (Float32Array, Float64Array и т.д.)
+            if (data.constructor && data.constructor.name.includes('Array')) {
+                return Array.from(data);
+            }
+            
+            // Проверяем есть ли length и можно ли итерировать
+            if (data.length !== undefined && typeof data[Symbol.iterator] === 'function') {
+                return Array.from(data);
+            }
+            
+            // Попытка конвертации через Object.values если это объект с числовыми ключами
+            if (typeof data === 'object' && data !== null) {
+                const keys = Object.keys(data);
+                if (keys.length > 0 && keys.every(k => !isNaN(k))) {
+                    return keys.map(k => data[k]);
+                }
+            }
+            
+            console.warn("Не удалось определить тип данных:", typeof data, data);
+            return [];
+            
+        } catch (error) {
+            console.error("Ошибка копирования массива:", error);
+            return [];
+        }
+    }
+
+    // НОВЫЙ метод: Безопасное глубокое копирование
+    safeDeepCopy(data) {
+        if (!data) return null;
+        try {
+            return JSON.parse(JSON.stringify(data));
+        } catch (error) {
+            console.warn("Ошибка глубокого копирования:", error);
+            return null;
         }
     }
 
@@ -209,7 +257,7 @@ class PlotModeController {
                 updatedTraces++;
             } else {
                 // Режим "Уд. на работу"
-                update[`y[${index}]`] = [...this.originalData[index].y];
+                update[`y[${index}]`] = this.safeArrayCopy(this.originalData[index].y);
                 updatedTraces++;
             }
         });
@@ -227,27 +275,12 @@ class PlotModeController {
             console.log("❌ Нет данных для обновления");
         }
     }
-    
-    // Вспомогательная функция для получения удельной нормы из участков
-    getUdNormaFromSections(sections) {
-        if (!sections || !sections.length) return null;
-        
-        // Ищем первый участок с валидной удельной нормой
-        for (let section of sections) {
-            const ud_norma = this.safeFloat(section.ud_norma);
-            if (ud_norma > 0) {
-                return ud_norma;
-            }
-        }
-        return null;
-    }
 
     safeFloat(value) {
         if (value === null || value === undefined || value === 'N/A' || value === '' || value === '-') {
             return 0;
         }
         
-        // Преобразуем к строке и очищаем
         let strValue = String(value).replace(',', '.');
         const num = parseFloat(strValue);
         return isNaN(num) ? 0 : num;
@@ -398,44 +431,6 @@ class PlotModeController {
             return `<tr style="background-color:${bgColor};">${cells}</tr>`;
         }).join('');
     
-        // Итоговая строка с суммами
-        let totalsRow = '';
-        if (c.totals) {
-            const totalsData = [
-                'ИТОГО', '-', '-', '-', '-', '-',  // Первые 6 колонок
-                c.totals.tkm_brutto > 0 ? c.totals.tkm_brutto.toFixed(1) : '-',
-                c.totals.km > 0 ? c.totals.km.toFixed(1) : '-',
-                c.totals.pr > 0 ? c.totals.pr.toFixed(1) : '-',
-                c.totals.rashod_fact > 0 ? c.totals.rashod_fact.toFixed(1) : '-',
-                c.totals.rashod_norm > 0 ? c.totals.rashod_norm.toFixed(1) : '-',
-                c.totals.ud_norma > 0 ? c.totals.ud_norma.toFixed(1) : '-',
-                c.totals.axle_load > 0 ? c.totals.axle_load.toFixed(1) : '-',
-                c.totals.norma_work > 0 ? c.totals.norma_work.toFixed(1) : '-',
-                c.totals.fact_ud > 0 ? c.totals.fact_ud.toFixed(1) : '-',
-                c.totals.fact_work > 0 ? c.totals.fact_work.toFixed(1) : '-',
-                c.totals.norma_single > 0 ? c.totals.norma_single.toFixed(1) : '-',
-                c.totals.idle_brigada_total > 0 ? c.totals.idle_brigada_total.toFixed(1) : '-',
-                c.totals.idle_brigada_norm > 0 ? c.totals.idle_brigada_norm.toFixed(1) : '-',
-                c.totals.manevr_total > 0 ? c.totals.manevr_total.toFixed(1) : '-',
-                c.totals.manevr_norm > 0 ? c.totals.manevr_norm.toFixed(1) : '-',
-                c.totals.start_total > 0 ? c.totals.start_total.toFixed(1) : '-',
-                c.totals.start_norm > 0 ? c.totals.start_norm.toFixed(1) : '-',
-                c.totals.delay_total > 0 ? c.totals.delay_total.toFixed(1) : '-',
-                c.totals.delay_norm > 0 ? c.totals.delay_norm.toFixed(1) : '-',
-                c.totals.speed_limit_total > 0 ? c.totals.speed_limit_total.toFixed(1) : '-',
-                c.totals.speed_limit_norm > 0 ? c.totals.speed_limit_norm.toFixed(1) : '-',
-                c.totals.transfer_loco_total > 0 ? c.totals.transfer_loco_total.toFixed(1) : '-',
-                c.totals.transfer_loco_norm > 0 ? c.totals.transfer_loco_norm.toFixed(1) : '-',
-                '-'  // Количество дубликатов
-            ];
-    
-            const totalsCells = totalsData.map(value => 
-                `<td style="padding:4px;border:1px solid #ddd;text-align:center;font-size:10px;white-space:nowrap;font-weight:bold;background-color:#e6f3ff;">${value}</td>`
-            ).join('');
-    
-            totalsRow = `<tr style="background-color:#e6f3ff;">${totalsCells}</tr>`;
-        }
-    
         return `
             <div style="margin-bottom:20px;">
                 <h3>Информация по участкам (всего: ${c.all_sections.length})</h3>
@@ -443,7 +438,6 @@ class PlotModeController {
                     <table style="border-collapse:collapse;width:100%;font-family:Arial;font-size:10px;min-width:2500px;">
                         <tr style="background-color:#f0f0f0;">${headerRow}</tr>
                         ${dataRows}
-                        ${totalsRow}
                     </table>
                 </div>
             </div>
@@ -458,7 +452,6 @@ class PlotModeController {
             ['Н=Ф', c.n_equals_f]
         ];
 
-        // Добавляем коэффициенты для отладки
         if (c.coefficient_section !== null && c.coefficient_section !== undefined) {
             analysisFields.push(['Коэффициент участка (Факт/Норма)', c.coefficient_section.toFixed(6)]);
         }
@@ -469,22 +462,6 @@ class PlotModeController {
         
         if (c.expected_nf_y !== null && c.expected_nf_y !== undefined) {
             analysisFields.push(['Ожидаемая Y в режиме Н/Ф', c.expected_nf_y.toFixed(3)]);
-        }
-        
-        // Отладочная информация
-        if (c.debug_info) {
-            analysisFields.push(['--- ОТЛАДКА ---', '']);
-            analysisFields.push(['Факт уд (текущий участок)', c.debug_info.fact_ud_current || 'N/A']);
-            analysisFields.push(['Уд. норма (текущий участок)', c.debug_info.ud_norma_current || 'N/A']);
-            analysisFields.push(['Расход факт (всего)', c.debug_info.rashod_fact_total || 'N/A']);
-            analysisFields.push(['Расход норма (всего)', c.debug_info.rashod_norm_total || 'N/A']);
-        }
-
-        if (c.coefficient && c.coefficient !== 1.0) {
-            analysisFields.push(['Коэффициент локомотива', c.coefficient]);
-            if (c.fact_ud_original) {
-                analysisFields.push(['Факт. удельный исходный', c.fact_ud_original]);
-            }
         }
 
         const rows = analysisFields.map(([label, value]) => 
@@ -500,7 +477,6 @@ class PlotModeController {
             </div>
         `;
     }
-
     
 }
 

@@ -460,16 +460,7 @@ class PlotBuilder:
     
     def _process_route_point(self, row: pd.Series, norm_functions: Dict, 
                             target_norm_type: str = None) -> Optional[Dict]:
-        """Обрабатывает одну точку маршрута для построения графика.
-        
-        Args:
-            row: Строка данных маршрута из DataFrame
-            norm_functions: Словарь функций интерполяции норм 
-            target_norm_type: Фильтр по типу нормы ("Вес" или "Нажатие")
-        
-        Returns:
-            Dict с координатами точки и данными для hover/modal или None если точка невалидна
-        """
+        """Обрабатывает одну точку маршрута для построения графика - ИСПРАВЛЕНО ДЛЯ СЕРИАЛИЗАЦИИ."""
         try:
             # 1. Проверяем наличие номера нормы
             norm_number = row.get("Номер нормы")
@@ -527,8 +518,20 @@ class PlotBuilder:
                     "all_sections": [],
                     "rashod_fact": 0.0,
                     "rashod_norm": 0.0,
-                    "ud_norma_original": y_val_norma,
-                    "coefficient_route": 1.0
+                    "rashod_fact_total": 0.0,
+                    "rashod_norm_total": 0.0,
+                    "ud_norma_original": float(y_val_norma),
+                    "coefficient_route": 1.0,
+                    "expected_nf_y": 0.0,
+                    "coefficient_section": 1.0,
+                    "fact_ud_original_section": float(y_val_fact_ud),
+                    "norm_interpolated": 0.0,
+                    "deviation_percent": 0.0,
+                    "status": "N/A",
+                    "n_equals_f": "N/A",
+                    "debug_info": {"error": "failed"},
+                    "use_red_rashod": False,
+                    "totals": {}
                 }
             
             # 8. Создаем hover-текст с правильными значениями
@@ -536,16 +539,25 @@ class PlotBuilder:
                 row, norm_str, x_val, y_val_fact_ud, y_val_norma, param_label
             )
             
-            # 9. Логируем успешную обработку точки
-            logger.debug("Обработана точка: маршрут %s, норма %s, x=%.2f, y=%.2f", 
-                        row.get("Номер маршрута"), norm_str, x_val, y_val_fact_ud)
+            # 9. ИСПРАВЛЕНО: Приводим координаты к нативным Python типам
+            final_x = float(x_val)
+            final_y = float(y_val_fact_ud)
             
-            # 10. Возвращаем данные точки
+            # 10. Финальная валидация координат
+            if not isinstance(final_x, float) or not isinstance(final_y, float):
+                logger.error("Некорректные типы координат: x=%s, y=%s", type(final_x), type(final_y))
+                return None
+            
+            if not (0 < final_x < float('inf')) or not (0 < final_y < float('inf')):
+                logger.error("Некорректные значения координат: x=%s, y=%s", final_x, final_y)
+                return None
+            
+            # 11. Возвращаем данные точки
             return {
-                "x": float(x_val),                    # X координата (параметр нормирования)
-                "y": float(y_val_fact_ud),           # Y координата (исходный "Факт уд")
-                "hover": hover_text,                  # Текст при наведении мыши
-                "custom_data": full_custom_data       # Полные данные для модального окна
+                "x": final_x,                    # X координата (параметр нормирования) 
+                "y": final_y,                    # Y координата (исходный "Факт уд")
+                "hover": hover_text,             # Текст при наведении мыши
+                "custom_data": full_custom_data  # Полные данные для модального окна
             }
             
         except Exception as e:
@@ -554,17 +566,17 @@ class PlotBuilder:
             return None
 
     def _build_full_custom_data_safe(self, row: pd.Series) -> Dict:
-        """Безопасная версия создания полных данных маршрута."""
+        """Безопасная версия создания полных данных маршрута - ИСПРАВЛЕНО ДЛЯ СЕРИАЛИЗАЦИИ."""
         try:
             # Базовые данные маршрута
             route_number = str(row.get("Номер маршрута", "N/A"))
             route_date = str(row.get("Дата маршрута", "N/A"))
             
-            # Данные текущего участка
-            fact_ud = safe_float(row.get("Факт уд"), 0.0)
-            ud_norma = safe_float(row.get("Уд. норма, норма на 1 час ман. раб."), 0.0)
-            rashod_fact = safe_float(row.get("Расход фактический"), 0.0)
-            rashod_norm = safe_float(row.get("Расход по норме"), 0.0)
+            # Данные текущего участка - ИСПРАВЛЕНО: приведение к Python типам
+            fact_ud = float(safe_float(row.get("Факт уд"), 0.0))
+            ud_norma = float(safe_float(row.get("Уд. норма, норма на 1 час ман. раб."), 0.0))
+            rashod_fact = float(safe_float(row.get("Расход фактический"), 0.0))
+            rashod_norm = float(safe_float(row.get("Расход по норме"), 0.0))
             
             # Попытка получить данные всего маршрута
             rashod_fact_total = rashod_fact  # По умолчанию = текущий участок
@@ -579,17 +591,20 @@ class PlotBuilder:
                         (analyzer.routes_df['Дата маршрута'] == row.get("Дата маршрута"))
                     ]
                     if not same_route.empty:
-                        rashod_fact_total = same_route['Расход фактический'].sum()
-                        rashod_norm_total = same_route['Расход по норме'].sum()
+                        total_fact = float(same_route['Расход фактический'].sum())
+                        total_norm = float(same_route['Расход по норме'].sum())
+                        if total_fact > 0 and total_norm > 0:
+                            rashod_fact_total = total_fact
+                            rashod_norm_total = total_norm
             except Exception:
                 pass  # Используем данные текущего участка
             
-            # Расчет коэффициентов
-            coef_section = fact_ud / ud_norma if (fact_ud > 0 and ud_norma > 0) else 1.0
-            coef_route = rashod_fact_total / rashod_norm_total if (rashod_fact_total > 0 and rashod_norm_total > 0) else 1.0
-            expected_nf = coef_route * ud_norma if (coef_route > 0 and ud_norma > 0) else 0.0
+            # Расчет коэффициентов - ИСПРАВЛЕНО: приведение к float
+            coef_section = float(fact_ud / ud_norma if (fact_ud > 0 and ud_norma > 0) else 1.0)
+            coef_route = float(rashod_fact_total / rashod_norm_total if (rashod_fact_total > 0 and rashod_norm_total > 0) else 1.0)
+            expected_nf = float(coef_route * ud_norma if (coef_route > 0 and ud_norma > 0) else 0.0)
             
-            # Простая структура участков
+            # Простая структура участков - ИСПРАВЛЕНО: все значения приведены к сериализуемым типам
             sections = [
                 {
                     "section_name": str(row.get("Наименование участка", "N/A")),
@@ -597,42 +612,64 @@ class PlotBuilder:
                     "brutto": str(row.get("БРУТТО", "N/A")),
                     "osi": str(row.get("ОСИ", "N/A")),
                     "norm_number": str(row.get("Номер нормы", "N/A")),
+                    "movement_type": str(row.get("Дв. тяга", "N/A")),
+                    "tkm_brutto": str(row.get("Ткм брутто", "N/A")),
+                    "km": str(row.get("Км", "N/A")),
+                    "pr": str(row.get("Пр.", "N/A")),
                     "rashod_fact": str(rashod_fact) if rashod_fact > 0 else "N/A",
                     "rashod_norm": str(rashod_norm) if rashod_norm > 0 else "N/A",
                     "fact_ud": str(fact_ud) if fact_ud > 0 else "N/A",
                     "ud_norma": str(ud_norma) if ud_norma > 0 else "N/A",
+                    "axle_load": str(row.get("Нажатие на ось", "N/A")),
+                    "norma_work": str(row.get("Норма на работу", "N/A")),
+                    "fact_work": str(row.get("Факт на работу", "N/A")),
+                    "norma_single": str(row.get("Норма на одиночное", "N/A")),
+                    "idle_brigada_total": str(row.get("Простой с бригадой, мин., всего", "N/A")),
+                    "idle_brigada_norm": str(row.get("Простой с бригадой, мин., норма", "N/A")),
+                    "manevr_total": str(row.get("Маневры, мин., всего", "N/A")),
+                    "manevr_norm": str(row.get("Маневры, мин., норма", "N/A")),
+                    "start_total": str(row.get("Трогание с места, случ., всего", "N/A")),
+                    "start_norm": str(row.get("Трогание с места, случ., норма", "N/A")),
+                    "delay_total": str(row.get("Нагон опозданий, мин., всего", "N/A")),
+                    "delay_norm": str(row.get("Нагон опозданий, мин., норма", "N/A")),
+                    "speed_limit_total": str(row.get("Ограничения скорости, случ., всего", "N/A")),
+                    "speed_limit_norm": str(row.get("Ограничения скорости, случ., норма", "N/A")),
+                    "transfer_loco_total": str(row.get("На пересылаемые л-вы, всего", "N/A")),
+                    "transfer_loco_norm": str(row.get("На пересылаемые л-вы, норма", "N/A")),
+                    "duplicates_count": str(row.get("Количество дубликатов маршрута", "N/A")),
                     "use_red_color": bool(row.get('USE_RED_COLOR', False)),
                     "use_red_rashod": bool(row.get('USE_RED_RASHOD', False))
                 }
             ]
             
+            # ИСПРАВЛЕНО: все значения приведены к нативным Python типам для JSON сериализации
             return {
                 # Основная информация
-                "route_number": route_number,
-                "route_date": route_date,
+                "route_number": str(route_number),
+                "route_date": str(route_date),
                 "trip_date": str(row.get("Дата поездки", "N/A")),
                 "driver_tab": str(row.get("Табельный машиниста", "N/A")),
                 "locomotive_series": str(row.get("Серия локомотива", "N/A")),
                 "locomotive_number": str(row.get("Номер локомотива", "N/A")),
                 
                 # Суммарные расходы для режима Н/Ф
-                "rashod_fact_total": float(rashod_fact_total),
-                "rashod_norm_total": float(rashod_norm_total),
-                "rashod_fact": float(rashod_fact_total),  # Дублируем для совместимости
-                "rashod_norm": float(rashod_norm_total),   # Дублируем для совместимости
+                "rashod_fact_total": rashod_fact_total,
+                "rashod_norm_total": rashod_norm_total,
+                "rashod_fact": rashod_fact_total,  # Дублируем для совместимости
+                "rashod_norm": rashod_norm_total,   # Дублируем для совместимости
                 
                 # Данные участка для режима Н/Ф
-                "ud_norma_original": float(ud_norma),
-                "fact_ud_original_section": float(fact_ud),
+                "ud_norma_original": ud_norma,
+                "fact_ud_original_section": fact_ud,
                 
                 # Коэффициенты
-                "coefficient_section": float(coef_section),
-                "coefficient_route": float(coef_route), 
-                "expected_nf_y": float(expected_nf),
+                "coefficient_section": coef_section,
+                "coefficient_route": coef_route, 
+                "expected_nf_y": expected_nf,
                 
                 # Анализ
-                "norm_interpolated": safe_float(row.get("Норма интерполированная"), 0.0),
-                "deviation_percent": safe_float(row.get("Отклонение, %"), 0.0),
+                "norm_interpolated": float(safe_float(row.get("Норма интерполированная"), 0.0)),
+                "deviation_percent": float(safe_float(row.get("Отклонение, %"), 0.0)),
                 "status": str(row.get("Статус", "N/A")),
                 "n_equals_f": str(row.get("Н=Ф", "N/A")),
                 
@@ -641,10 +678,10 @@ class PlotBuilder:
                 
                 # Отладка
                 "debug_info": {
-                    "fact_ud_current": float(fact_ud),
-                    "ud_norma_current": float(ud_norma),
-                    "rashod_fact_total": float(rashod_fact_total),
-                    "rashod_norm_total": float(rashod_norm_total),
+                    "fact_ud_current": fact_ud,
+                    "ud_norma_current": ud_norma,
+                    "rashod_fact_total": rashod_fact_total,
+                    "rashod_norm_total": rashod_norm_total,
                 },
                 
                 "use_red_rashod": bool(row.get("USE_RED_RASHOD", False)),
@@ -653,47 +690,65 @@ class PlotBuilder:
             
         except Exception as e:
             logger.error("Ошибка в _build_full_custom_data_safe: %s", e)
-            # Минимальные данные при ошибке
+            # Минимальные данные при ошибке - ИСПРАВЛЕНО: все значения сериализуемы
             return {
                 "route_number": str(row.get("Номер маршрута", "ERROR")),
                 "route_date": str(row.get("Дата маршрута", "ERROR")),
+                "trip_date": "N/A",
+                "driver_tab": "N/A", 
+                "locomotive_series": "N/A",
+                "locomotive_number": "N/A",
                 "error": str(e),
                 "all_sections": [],
                 "rashod_fact": 0.0,
                 "rashod_norm": 0.0,
+                "rashod_fact_total": 0.0,
+                "rashod_norm_total": 0.0,
                 "ud_norma_original": 0.0,
                 "coefficient_route": 1.0,
                 "expected_nf_y": 0.0,
-                "debug_info": {"error": "failed"}
+                "coefficient_section": 1.0,
+                "fact_ud_original_section": 0.0,
+                "norm_interpolated": 0.0,
+                "deviation_percent": 0.0,
+                "status": "N/A",
+                "n_equals_f": "N/A",
+                "debug_info": {"error": "failed"},
+                "use_red_rashod": False,
+                "totals": {}
             }
 
     def _build_route_hover_corrected(self, row: pd.Series, norm_str: str, 
                                     x_val: float, fact_ud: float, norma_ud: float, 
                                     param_label: str) -> str:
         """Создает ПРАВИЛЬНЫЙ hover-текст с исходными значениями участка."""
-        route_number = row.get("Номер маршрута", "N/A")
-        route_date = row.get("Дата маршрута", "N/A")
-        section_name = row.get("Наименование участка", "N/A")
-        series = row.get("Серия локомотива", "N/A")
-        number = row.get("Номер локомотива", "N/A")
-        
-        # ИСПРАВЛЕНО: Показываем ИСХОДНЫЕ значения участка
-        deviation = format_number(row.get("Отклонение, %"))
-        rashod_fact = format_number(row.get("Расход фактический"))
-        rashod_norm = format_number(row.get("Расход по норме"))
-        
-        return (
-            f"<b>Маршрут №{route_number} | {route_date}</b><br>"
-            f"Участок: {section_name}<br>"
-            f"Локомотив: {series} №{number}<br>"
-            f"{param_label}: {x_val:.1f}<br>"
-            f"Факт: {format_number(fact_ud)}<br>"           # ← ИСХОДНЫЙ "Факт уд" = 49.19
-            f"Норма: {format_number(norma_ud)}<br>"         # ← ИСХОДНАЯ "Уд. норма" = 22.802
-            f"Расход фактический: {rashod_fact}<br>"
-            f"Расход по норме: {rashod_norm}<br>"
-            f"Отклонение: {deviation}%<br>"
-            f"Номер нормы: {norm_str}"
-        )
+        try:
+            route_number = row.get("Номер маршрута", "N/A")
+            route_date = row.get("Дата маршрута", "N/A")
+            section_name = row.get("Наименование участка", "N/A")
+            series = row.get("Серия локомотива", "N/A")
+            number = row.get("Номер локомотива", "N/A")
+            
+            # ИСПРАВЛЕНО: Показываем ИСХОДНЫЕ значения участка
+            deviation = format_number(row.get("Отклонение, %"))
+            rashod_fact = format_number(row.get("Расход фактический"))
+            rashod_norm = format_number(row.get("Расход по норме"))
+            
+            return (
+                f"<b>Маршрут №{route_number} | {route_date}</b><br>"
+                f"Участок: {section_name}<br>"
+                f"Локомотив: {series} №{number}<br>"
+                f"{param_label}: {x_val:.1f}<br>"
+                f"Факт: {format_number(fact_ud)}<br>"           # ← ИСХОДНЫЙ "Факт уд"
+                f"Норма: {format_number(norma_ud)}<br>"         # ← ИСХОДНАЯ "Уд. норма"
+                f"Расход фактический: {rashod_fact}<br>"
+                f"Расход по норме: {rashod_norm}<br>"
+                f"Отклонение: {deviation}%<br>"
+                f"Номер нормы: {norm_str}"
+            )
+        except Exception as e:
+            logger.error("Ошибка создания hover-текста: %s", e)
+            return f"Ошибка отображения данных для маршрута {row.get('Номер маршрута', 'N/A')}"
 
     def _calculate_actual_specific_consumption_for_work(self, row: pd.Series) -> Optional[float]:
         """Вычисляет фактический удельный расход на работу."""
@@ -901,7 +956,7 @@ class PlotBuilder:
         )
     
     def add_browser_controls(self, html_content: str) -> str:
-        """Добавляет контролы и подключает JS к HTML."""
+        """Добавляет контролы и подключает JS к HTML - ИСПРАВЛЕННАЯ ВЕРСИЯ."""
         # Проверяем путь к JS файлу
         if not self.js_file_path.exists():
             logger.warning("JS файл не найден: %s", self.js_file_path)
