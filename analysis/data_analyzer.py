@@ -29,24 +29,416 @@ class RouteDataAnalyzer:
         routes_df: pd.DataFrame,
         specific_norm_id: Optional[str] = None
     ) -> Tuple[pd.DataFrame, Dict]:
-        """Анализирует данные участка с интерполяцией норм."""
-        logger.debug("Анализ участка %s, строк: %s", section_name, len(routes_df))
+        """ИСПРАВЛЕННЫЙ анализ данных участка с детальной валидацией."""
+        logger.info("=== АНАЛИЗ ДАННЫХ УЧАСТКА ===")
+        logger.debug("Участок: %s | Записей: %d | Норма: %s", 
+                    section_name, len(routes_df), specific_norm_id or "Все")
+
+        try:
+            # ВАЛИДАЦИЯ ВХОДНЫХ ДАННЫХ
+            if routes_df is None or routes_df.empty:
+                logger.error("DataFrame пуст для анализа")
+                return pd.DataFrame(), {}
+                
+            # ОПРЕДЕЛЕНИЕ НОРМ ДЛЯ АНАЛИЗА
+            if specific_norm_id:
+                norm_numbers = [str(specific_norm_id)]
+                logger.info("Анализ для конкретной нормы: %s", specific_norm_id)
+            else:
+                # Получаем все уникальные нормы из данных
+                unique_norms = routes_df["Номер нормы"].dropna().unique()
+                norm_numbers = [str(safe_int(n)) for n in unique_norms if safe_int(n) != 0]
+                norm_numbers = list(set(norm_numbers))  # Удаляем дубликаты
+                logger.info("Анализ для всех норм участка: %s", norm_numbers)
+            
+            if not norm_numbers:
+                logger.error("Не найдено норм для анализа")
+                return routes_df.copy(), {}
+
+            # СОЗДАНИЕ ФУНКЦИЙ НОРМ С ЗАЩИТОЙ ОТ ОШИБОК
+            logger.info("Создание функций интерполяции для %d норм", len(norm_numbers))
+            norm_functions = self._create_norm_functions_safe(norm_numbers, routes_df)
+            
+            if not norm_functions:
+                logger.warning("Не создано ни одной функции нормы")
+                # Возвращаем исходные данные без анализа, но не пустой результат
+                return routes_df.copy(), {}
+
+            logger.info("✓ Создано функций норм: %d", len(norm_functions))
+
+            # ПРИМЕНЕНИЕ ИНТЕРПОЛЯЦИИ И РАСЧЕТОВ
+            logger.info("Применение интерполяции и расчет отклонений")
+            analyzed_df = self._interpolate_and_calculate_safe(routes_df, norm_functions)
+            
+            # ВАЛИДАЦИЯ РЕЗУЛЬТАТА
+            processed_count = len(analyzed_df[analyzed_df["Статус"].notna() & (analyzed_df["Статус"] != "Не определен")])
+            logger.info("✓ АНАЛИЗ ЗАВЕРШЕН: обработано %d из %d записей", processed_count, len(analyzed_df))
+            
+            return analyzed_df, norm_functions
+            
+        except Exception as e:
+            logger.error("КРИТИЧЕСКАЯ ошибка анализа данных участка %s: %s", section_name, e, exc_info=True)
+            # Возвращаем исходные данные в случае критической ошибки
+            return routes_df.copy() if routes_df is not None else pd.DataFrame(), {}
+
+    def _interpolate_and_calculate_safe(self, routes_df: pd.DataFrame, norm_functions: Dict) -> pd.DataFrame:
+        """ИСПРАВЛЕННОЕ применение интерполяции с обработкой каждой строки."""
+        try:
+            df = routes_df.copy()
+            
+            # Добавляем новые колонки если их нет
+            new_columns = ["Норма интерполированная", "Параметр нормирования", "Значение параметра", "Отклонение, %", "Статус"]
+            for col in new_columns:
+                if col not in df.columns:
+                    df[col] = None
+            
+            processed_count = 0
+            error_count = 0
+            
+            for idx, (df_idx, row) in enumerate(df.iterrows()):
+                try:
+                    # Получаем номер нормы
+                    norm_number = row.get("Номер нормы")
+                    if pd.isna(norm_number):
+                        continue
+                    
+                    norm_str = str(safe_int(norm_number))
+                    norm_func_data = norm_functions.get(norm_str)
+                    if not norm_func_data:
+                        continue
+                    
+                    # Вычисляем параметр нормирования
+                    norm_type = norm_func_data.get("norm_type", "Нажатие")
+                    x_param = self._calculate_normalization_parameter_safe(row, norm_type)
+                    
+                    if not x_param or x_param <= 0:
+                        continue
+                    
+                    # Применяем интерполяцию
+                    try:
+                        interpolation_func = norm_func_data["function"]
+                        interpolated_norm = float(interpolation_func(x_param))
+                        
+                        # Проверяем разумность результата
+                        if interpolated_norm <= 0 or interpolated_norm > 10000:  # Разумные границы
+                            logger.debug("Некорректный результат интерполяции для строки %d: %.2f", idx, interpolated_norm)
+                            continue
+                            
+                    except Exception as func_error:
+                        logger.debug("Ошибка вызова функции интерполяции для строки %d: %s", idx, func_error)
+                        continue
+                    
+                    # Записываем результаты интерполяции
+                    df.at[df_idx, "Норма интерполированная"] = interpolated_norm
+                    df.at[df_idx, "Параметр нормирования"] = "вес поезда (БРУТТО)" if norm_type == "Вес" else "нажатие на ось"
+                    df.at[df_idx, "Значение параметра"] = x_param
+                    
+                    # Вычисляем отклонение
+                    actual_value = safe_float(row.get("Факт уд"))
+                    if actual_value and actual_value > 0 and interpolated_norm > 0:
+                        try:
+                            deviation = ((actual_value - interpolated_norm) / interpolated_norm) * 100.0
+                            
+                            # Проверяем разумность отклонения (не более ±500%)
+                            if -500 <= deviation <= 500:
+                                df.at[df_idx, "Отклонение, %"] = deviation
+                                df.at[df_idx, "Статус"] = StatusClassifier.get_status(deviation)
+                                processed_count += 1
+                            else:
+                                logger.debug("Некорректное отклонение для строки %d: %.1f%%", idx, deviation)
+                                
+                        except Exception as deviation_error:
+                            logger.debug("Ошибка расчета отклонения для строки %d: %s", idx, deviation_error)
+                            
+                except Exception as row_error:
+                    logger.debug("Ошибка обработки строки %d: %s", idx, row_error)
+                    error_count += 1
+                    continue
+            
+            logger.info("✓ Интерполяция завершена: обработано=%d, ошибок=%d из %d строк", 
+                    processed_count, error_count, len(df))
+            
+            return df
+            
+        except Exception as e:
+            logger.error("КРИТИЧЕСКАЯ ошибка интерполяции: %s", e, exc_info=True)
+            # Возвращаем исходный DataFrame в случае критической ошибки
+            return routes_df.copy()
+
+    def _create_norm_functions_safe(self, norm_numbers, routes_df: pd.DataFrame) -> Dict:
+        """ИСПРАВЛЕННОЕ создание функций интерполяции с robust error handling."""
+        norm_functions = {}
         
-        # Определяем нормы для анализа
-        norm_numbers = [specific_norm_id] if specific_norm_id else routes_df["Номер нормы"].dropna().unique()
+        for norm_number in norm_numbers:
+            try:
+                norm_str = str(safe_int(norm_number)) if pd.notna(norm_number) else None
+                if not norm_str or norm_str == "0":
+                    continue
+                    
+                # Получаем данные нормы из хранилища
+                norm_data = self.norm_storage.get_norm(norm_str)
+                if not norm_data or not norm_data.get("points"):
+                    logger.debug("Норма %s не найдена в хранилище или не содержит точек", norm_str)
+                    continue
+                    
+                try:
+                    base_points = list(norm_data["points"])
+                    norm_type = norm_data.get("norm_type", "Нажатие")
+                    
+                    # Дополнительные точки из маршрутов - с защитой от ошибок
+                    additional_points = []
+                    try:
+                        additional_points = self._extract_additional_points_safe(routes_df, norm_str, norm_type)
+                    except Exception as extract_error:
+                        logger.warning("Ошибка извлечения доп. точек для нормы %s: %s", norm_str, extract_error)
+                        additional_points = []
+                    
+                    # Объединение точек
+                    all_points = self._merge_points_safe(base_points, additional_points)
+                    
+                    # Создание функции интерполяции с fallback
+                    try:
+                        interpolation_func = self.norm_storage._create_interpolation_function(all_points)
+                    except Exception as interp_error:
+                        logger.warning("Ошибка создания функции интерполяции для нормы %s: %s", norm_str, interp_error)
+                        # Создаем простую константную функцию как fallback
+                        if base_points:
+                            const_y = base_points[0][1]
+                            interpolation_func = lambda x: float(const_y)
+                        else:
+                            continue
+                    
+                    # Безопасное вычисление диапазона X
+                    try:
+                        x_range = (min(p[0] for p in base_points), max(p[0] for p in base_points))
+                    except Exception:
+                        x_range = (1.0, 100.0)  # fallback диапазон
+                    
+                    norm_functions[norm_str] = {
+                        "function": interpolation_func,
+                        "points": all_points,
+                        "base_points": base_points,
+                        "additional_points": additional_points,
+                        "x_range": x_range,
+                        "data": norm_data,
+                        "norm_type": norm_type,
+                    }
+                    
+                    logger.debug("✓ Создана функция для нормы %s (тип: %s, точек: %d)", 
+                            norm_str, norm_type, len(all_points))
+                    
+                except Exception as norm_creation_error:
+                    logger.error("Ошибка создания функции для нормы %s: %s", norm_str, norm_creation_error, exc_info=True)
+                    continue
+                    
+            except Exception as norm_error:
+                logger.error("Ошибка обработки нормы %s: %s", norm_number, norm_error)
+                continue
+            
+        logger.info("✓ Создано функций норм: %d из %d запрошенных", len(norm_functions), len(norm_numbers))
+        return norm_functions
+
+    def _merge_points_safe(self, base_points: List[Tuple[float, float]], 
+                        additional_points: List[Tuple[float, float]], 
+                        tolerance: float = 0.1) -> List[Tuple[float, float]]:
+        """ИСПРАВЛЕННОЕ объединение точек с защитой от ошибок."""
+        try:
+            if not base_points:
+                logger.warning("Нет базовых точек для объединения")
+                return additional_points[:] if additional_points else []
+                
+            if not additional_points:
+                return base_points[:]
+            
+            all_points = list(base_points)  # Копируем базовые точки
+            merged_count = 0
+            added_count = 0
+            
+            for x_new, y_new in additional_points:
+                try:
+                    x_new_f, y_new_f = float(x_new), float(y_new)
+                    
+                    # Проверяем валидность
+                    if x_new_f <= 0 or y_new_f <= 0:
+                        continue
+                    
+                    # Ищем близкую точку для объединения
+                    is_merged = False
+                    for i, (x_existing, y_existing) in enumerate(all_points):
+                        if abs(x_new_f - x_existing) <= tolerance:
+                            # Усредняем Y-значения
+                            avg_y = (y_existing + y_new_f) / 2.0
+                            all_points[i] = (x_existing, avg_y)
+                            is_merged = True
+                            merged_count += 1
+                            break
+                    
+                    if not is_merged:
+                        all_points.append((x_new_f, y_new_f))
+                        added_count += 1
+                        
+                except Exception as point_error:
+                    logger.debug("Ошибка обработки дополнительной точки (%s, %s): %s", x_new, y_new, point_error)
+                    continue
+            
+            # Сортируем по X для корректной интерполяции
+            all_points.sort(key=lambda p: p[0])
+            
+            logger.debug("✓ Объединение точек: базовых=%d, объединено=%d, добавлено=%d, итого=%d", 
+                        len(base_points), merged_count, added_count, len(all_points))
+            
+            return all_points
+            
+        except Exception as e:
+            logger.error("КРИТИЧЕСКАЯ ошибка объединения точек: %s", e, exc_info=True)
+            return base_points[:] if base_points else []
+
+    def _extract_additional_points_safe(self, routes_df: pd.DataFrame, norm_id: str, norm_type: str) -> List[Tuple[float, float]]:
+        """ИСПРАВЛЕННОЕ извлечение дополнительных точек с защитой от ошибок."""
+        logger.debug("Извлечение дополнительных точек для нормы %s (тип: %s)", norm_id, norm_type)
         
-        # Создаем функции норм
-        norm_functions = self._create_norm_functions(norm_numbers, routes_df)
-        if not norm_functions:
-            logger.warning("Не найдено функций норм для участка %s", section_name)
-            return routes_df, {}
-        
-        # Применяем интерполяцию и расчеты
-        analyzed_df = self._interpolate_and_calculate(routes_df, norm_functions)
-        
-        logger.info("Проанализировано %s строк для участка %s", len(analyzed_df), section_name)
-        return analyzed_df, norm_functions
-    
+        try:
+            # Находим колонку с удельной нормой
+            ud_norm_col = self._find_ud_norm_column_safe(routes_df)
+            if not ud_norm_col:
+                logger.debug("Колонка удельной нормы не найдена")
+                return []
+            
+            points = []
+            processed_rows = 0
+            
+            # Безопасная обработка каждой строки
+            for idx, (_, row) in enumerate(routes_df.iterrows()):
+                try:
+                    processed_rows += 1
+                    
+                    # Проверка нормы
+                    row_norm = row.get("Номер нормы")
+                    if pd.isna(row_norm):
+                        continue
+                        
+                    row_norm_str = str(safe_int(row_norm))
+                    if row_norm_str != norm_id:
+                        continue
+                    
+                    # Получение значения удельной нормы
+                    ud_norm_value = row.get(ud_norm_col)
+                    if pd.isna(ud_norm_value) or str(ud_norm_value).strip() in ("", "-", "N/A"):
+                        continue
+                    
+                    try:
+                        ud_norm_float = float(str(ud_norm_value).replace(',', '.'))
+                        if ud_norm_float <= 0:
+                            continue
+                    except (ValueError, TypeError):
+                        continue
+                    
+                    # Вычисление параметра нормирования
+                    x_param = self._calculate_normalization_parameter_safe(row, norm_type)
+                    if x_param and x_param > 0:
+                        points.append((x_param, ud_norm_float))
+                        logger.debug("Добавлена точка нормы %s: x=%.2f, y=%.2f", norm_id, x_param, ud_norm_float)
+                    
+                except Exception as row_error:
+                    logger.debug("Ошибка обработки строки %d для нормы %s: %s", idx, norm_id, row_error)
+                    continue
+            
+            logger.info("✓ Извлечено дополнительных точек для нормы %s: %d из %d строк", 
+                    norm_id, len(points), processed_rows)
+            
+            return points
+            
+        except Exception as e:
+            logger.error("КРИТИЧЕСКАЯ ошибка извлечения точек для нормы %s: %s", norm_id, e, exc_info=True)
+            return []
+
+    def _calculate_normalization_parameter_safe(self, row: pd.Series, norm_type: str) -> Optional[float]:
+        """ИСПРАВЛЕННОЕ вычисление параметра нормирования с множественными fallback."""
+        try:
+            if norm_type == "Вес":
+                return self._calculate_weight_parameter_safe(row)
+            else:  # "Нажатие" и все остальные
+                return self._calculate_axle_load_parameter_safe(row)
+        except Exception as e:
+            logger.debug("Ошибка расчета параметра нормирования: %s", e)
+            return None
+
+    def _calculate_weight_parameter_safe(self, row: pd.Series) -> Optional[float]:
+        """Безопасно вычисляет вес поезда БРУТТО."""
+        try:
+            # Прямые колонки веса
+            for col in ("БРУТТО", "Вес БРУТТО", "Вес поезда БРУТТО", "Брутто"):
+                weight = safe_float(row.get(col))
+                if weight > 0:
+                    return weight
+            
+            # Расчет из ткм брутто / км
+            tkm_brutto = safe_float(row.get("Ткм брутто"))
+            km = safe_float(row.get("Км"))
+            
+            if tkm_brutto > 0 and km > 0:
+                return tkm_brutto / km
+            
+            return None
+            
+        except Exception as e:
+            logger.debug("Ошибка расчета веса: %s", e)
+            return None
+
+    def _find_ud_norm_column_safe(self, routes_df: pd.DataFrame) -> Optional[str]:
+        """Безопасно находит колонку с удельной нормой."""
+        try:
+            candidates = [
+                "Уд. норма, норма на 1 час ман. раб.",
+                "Удельная норма",
+                "Уд норма",
+                "Норма на 1 час",
+                "УД. НОРМА",
+            ]
+            
+            available_columns = list(routes_df.columns)
+            
+            for candidate in candidates:
+                if candidate in available_columns:
+                    logger.debug("Найдена колонка удельной нормы: %s", candidate)
+                    return candidate
+            
+            logger.debug("Колонка удельной нормы не найдена среди: %s", available_columns[:10])
+            return None
+            
+        except Exception as e:
+            logger.error("Ошибка поиска колонки удельной нормы: %s", e)
+            return None
+
+    def _calculate_axle_load_parameter_safe(self, row: pd.Series) -> Optional[float]:
+        """Безопасно вычисляет нажатие на ось с fallback методами."""
+        try:
+            # Метод 1: Готовое значение
+            axle_load = safe_float(row.get("Нажатие на ось"))
+            if axle_load > 0:
+                return axle_load
+            
+            # Метод 2: Расчет по БРУТТО/ОСИ
+            brutto = safe_float(row.get("БРУТТО"))
+            osi = safe_float(row.get("ОСИ"))
+            
+            if brutto > 0 and osi > 0:
+                return brutto / osi
+            
+            # Метод 3: Приблизительный расчет из ткм и км
+            tkm_brutto = safe_float(row.get("Ткм брутто"))
+            km = safe_float(row.get("Км"))
+            
+            if tkm_brutto > 0 and km > 0:
+                weight = tkm_brutto / km
+                # Эмпирическая формула: примерное нажатие на ось
+                return weight / 80.0  # ~80 тонн на ось в среднем
+            
+            return None
+            
+        except Exception as e:
+            logger.debug("Ошибка расчета нажатия на ось: %s", e)
+
     def _create_norm_functions(self, norm_numbers, routes_df: pd.DataFrame) -> Dict:
         """Создает функции интерполяции для норм."""
         norm_functions = {}

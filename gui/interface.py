@@ -61,8 +61,33 @@ class NormsAnalyzerGUI:
 
         logger.info("GUI инициализирован")
 
+    def _setup_matplotlib_environment(self):
+        """НОВЫЙ метод настройки matplotlib среды."""
+        try:
+            # Настройка matplotlib для GUI
+            import matplotlib
+            matplotlib.use('TkAgg', force=True)
+            
+            # Отключаем интерактивный режим
+            import matplotlib.pyplot as plt
+            plt.ioff()
+            
+            # Настройки DPI и качества
+            import matplotlib.rcParams as rcParams
+            rcParams['figure.dpi'] = 100
+            rcParams['savefig.dpi'] = 300
+            rcParams['font.family'] = 'sans-serif'
+            rcParams['axes.grid'] = True
+            rcParams['grid.alpha'] = 0.3
+            
+            logger.info("✓ matplotlib среда настроена для GUI")
+            
+        except Exception as e:
+            logger.error("Ошибка настройки matplotlib среды: %s", e)
+
     def _setup_gui(self):
         """Настраивает интерфейс."""
+        self._setup_matplotlib_environment()
         self._setup_styles()
         self._create_layout()
 
@@ -361,38 +386,59 @@ class NormsAnalyzerGUI:
 
     def _update_analysis_results(self, routes_df, norm_functions, statistics, error, section_name: str, 
                                 norm_id: Optional[str], single_section_only: bool):
-        """Обновляет результаты анализа."""
+        """ИСПРАВЛЕННОЕ обновление результатов анализа с защитой от ошибок."""
         if error:
-            messagebox.showerror("Ошибка", error)
+            logger.error("Ошибка анализа: %s", error)
+            messagebox.showerror("Ошибка анализа", error)
             return
 
         if routes_df is None or norm_functions is None or statistics is None:
-            messagebox.showwarning("Предупреждение", "Не удалось выполнить анализ")
+            error_msg = "Анализ вернул некорректные данные (None значения)"
+            logger.error(error_msg)
+            messagebox.showerror("Ошибка", error_msg)
             return
 
-        # ИЗМЕНЕНО: Сохраняем данные для встроенного графика
-        self._current_plot_data = {
-            'section_name': section_name,
-            'routes_df': routes_df,
-            'norm_functions': norm_functions,
-            'specific_norm_id': norm_id,
-            'single_section_only': single_section_only
-        }
+        try:
+            # БЕЗОПАСНО сохраняем данные для графика с валидацией
+            plot_data = {
+                'section_name': str(section_name),
+                'routes_df': routes_df.copy(),  # Создаем независимую копию
+                'norm_functions': dict(norm_functions),  # Создаем независимую копию
+                'specific_norm_id': str(norm_id) if norm_id else None,
+                'single_section_only': bool(single_section_only)
+            }
+            
+            # Дополнительная валидация перед сохранением
+            if self._validate_plot_data(plot_data):
+                self._current_plot_data = plot_data
+                logger.info("✓ Данные графика сохранены и валидированы")
+            else:
+                logger.error("Валидация данных графика не пройдена")
+                messagebox.showerror("Ошибка", "Данные анализа некорректны для построения графика")
+                return
 
-        # Обновляем интерфейс
-        self.viz_section.enable_plot_button(True)
-        self.control_section.enable_buttons({"export_plot": True})
-        self.control_section.update_statistics(statistics)
-        self.viz_section.update_plot_info(section_name, statistics, norm_id, single_section_only)
+            # Обновляем интерфейс
+            self.viz_section.enable_plot_button(True)
+            self.control_section.enable_buttons({"export_plot": True})
+            self.control_section.update_statistics(statistics)
+            self.viz_section.update_plot_info(section_name, statistics, norm_id, single_section_only)
 
-        norm_text = f" с нормой {norm_id}" if norm_id else ""
-        filter_text = " (только один участок)" if single_section_only else ""
-        logger.info("Анализ участка %s%s%s завершен", section_name, norm_text, filter_text)
+            # Логирование результата
+            norm_text = f" с нормой {norm_id}" if norm_id else ""
+            filter_text = " (только один участок)" if single_section_only else ""
+            logger.info("✓ Анализ участка %s%s%s завершен успешно", section_name, norm_text, filter_text)
+            logger.info("Результат: %d записей, %d функций норм, %d обработанных маршрутов",
+                    len(routes_df), len(norm_functions), statistics.get('processed', 0))
+
+        except Exception as e:
+            error_msg = f"Ошибка сохранения результатов анализа: {str(e)}"
+            logger.error("КРИТИЧЕСКАЯ ОШИБКА: %s", e, exc_info=True)
+            messagebox.showerror("Критическая ошибка", error_msg)
 
     # ========================== Встроенная визуализация ==========================
 
     def _open_integrated_plot(self):
-        """Открывает интегрированный график в новом окне."""
+        """ИСПРАВЛЕННЫЙ метод открытия интегрированного графика БЕЗ THREADING."""
         if not hasattr(self, '_current_plot_data') or not self._current_plot_data:
             messagebox.showwarning("Предупреждение", "Сначала выполните анализ участка")
             return
@@ -404,21 +450,78 @@ class NormsAnalyzerGUI:
                 messagebox.showinfo("Информация", "Окно графика уже открыто")
                 return
 
-            logger.info("Открытие встроенного графика")
+            logger.info("=== ОТКРЫТИЕ ВСТРОЕННОГО ГРАФИКА ===")
             
-            # Создаем новое окно графика
+            # Валидация данных перед созданием окна
+            plot_data = self._current_plot_data
+            if not self._validate_plot_data(plot_data):
+                messagebox.showerror("Ошибка", "Данные для графика некорректны")
+                return
+            
+            # СИНХРОННОЕ создание окна графика
+            logger.info("Создание окна графика...")
             self.plot_window = PlotWindow(self.root)
+            
+            # Создаем окно - может вызвать исключение
             plot_window_tk = self.plot_window.create_window()
             
-            # Отображаем график
-            self.plot_window.show_plot(**self._current_plot_data)
+            logger.info("✓ Окно создано, начинаем отображение графика")
             
-            logger.info("Встроенный график открыт успешно")
+            # СИНХРОННОЕ отображение графика - без threading!
+            self.plot_window.show_plot(**plot_data)
+            
+            logger.info("✓ Встроенный график открыт успешно")
 
         except Exception as e:
-            logger.error("Ошибка открытия встроенного графика: %s", e, exc_info=True)
-            messagebox.showerror("Ошибка", f"Не удалось открыть график: {str(e)}")
+            error_msg = f"Критическая ошибка открытия графика: {str(e)}"
+            logger.error("КРИТИЧЕСКАЯ ОШИБКА: %s", e, exc_info=True)
+            
+            # Очищаем поврежденное окно
+            if self.plot_window:
+                try:
+                    self.plot_window._on_window_close_safe()
+                except Exception:
+                    pass
+                self.plot_window = None
+                
+            messagebox.showerror("Критическая ошибка", error_msg)
 
+    def _validate_plot_data(self, plot_data: Dict) -> bool:
+        """НОВЫЙ метод валидации данных графика перед передачей."""
+        try:
+            required_keys = ['section_name', 'routes_df', 'norm_functions']
+            missing_keys = [key for key in required_keys if key not in plot_data]
+            
+            if missing_keys:
+                logger.error("Отсутствуют ключевые данные для графика: %s", missing_keys)
+                return False
+                
+            # Валидируем DataFrame
+            routes_df = plot_data['routes_df']
+            if routes_df is None or routes_df.empty:
+                logger.error("DataFrame маршрутов пуст")
+                return False
+                
+            # Валидируем функции норм
+            norm_functions = plot_data['norm_functions']
+            if not norm_functions or not isinstance(norm_functions, dict):
+                logger.error("Функции норм некорректны")
+                return False
+                
+            # Проверяем наличие обязательных колонок
+            required_columns = ["Номер нормы", "Факт уд", "Статус"]
+            missing_columns = [col for col in required_columns if col not in routes_df.columns]
+            if missing_columns:
+                logger.error("Отсутствуют обязательные колонки: %s", missing_columns)
+                return False
+                
+            logger.info("✓ Валидация данных графика пройдена")
+            return True
+            
+        except Exception as e:
+            logger.error("Ошибка валидации данных графика: %s", e)
+            return False
+    
     # ========================== Utility Methods ==========================
 
     def _run_async(self, func, on_done, on_error=None):

@@ -7,7 +7,10 @@ import os
 import tkinter as tk
 import logging
 from datetime import datetime
+import logging
 
+
+logger = logging.getLogger(__name__)
 # Добавляем текущую директорию в путь для импорта модулей
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -45,6 +48,44 @@ def setup_logging():
     logger.info(f"Файл логов: {log_filename}")
     
     return logger
+
+def configure_matplotlib_for_tkinter():
+    """ИСПРАВЛЕННАЯ функция настройки matplotlib для работы с tkinter."""
+    try:
+        import matplotlib
+        matplotlib.use('TkAgg', force=True)  # Принудительно устанавливаем backend
+        
+        # Настройки для стабильной работы с tkinter
+        import matplotlib.pyplot as plt
+        plt.ioff()  # Отключаем интерактивный режим по умолчанию
+        
+        # ИСПРАВЛЕНО: Правильный способ настройки rcParams
+        matplotlib.rcParams['figure.facecolor'] = 'white'
+        matplotlib.rcParams['axes.facecolor'] = 'white'
+        matplotlib.rcParams['savefig.facecolor'] = 'white'
+        matplotlib.rcParams['font.size'] = 10
+        matplotlib.rcParams['figure.dpi'] = 100
+        matplotlib.rcParams['savefig.dpi'] = 300
+        
+        logger.info("✓ matplotlib настроен для tkinter: backend=%s", matplotlib.get_backend())
+        
+    except Exception as e:
+        logger.error("КРИТИЧЕСКАЯ ошибка настройки matplotlib: %s", e)
+        raise RuntimeError(f"Не удалось настроить matplotlib: {e}")
+
+def validate_python_version():
+    """Проверяет версию Python."""
+    import sys
+    
+    if sys.version_info < (3, 9):
+        logger.error("Требуется Python 3.9+, текущая версия: %s", sys.version)
+        print("ОШИБКА: Требуется Python 3.9 или новее")
+        print(f"Текущая версия: {sys.version}")
+        input("Нажмите Enter для выхода...")
+        return False
+    
+    logger.info("✓ Версия Python корректна: %s", sys.version_info[:2])
+    return True
 
 def check_dependencies():
     """Проверяет наличие необходимых зависимостей"""
@@ -145,25 +186,32 @@ def create_initial_directories():
             logger.debug(f"Директория {directory} уже существует")
 
 def main():
-    """Главная функция приложения"""
+    """ОБНОВЛЕННАЯ главная функция с проверками совместимости."""
     
     # Настройка логирования
     logger = setup_logging()
     
     try:
-        # Проверка зависимостей
+        # 1. ДОБАВИТЬ: Проверка версии Python
+        if not validate_python_version():
+            return False
+        
+        # 2. Проверка зависимостей
         if not check_dependencies():
             logger.error("Проверка зависимостей не пройдена")
             input("Нажмите Enter для выхода...")
             return False
         
-        # Проверка структуры файлов
+        # 3. Проверка структуры файлов
         if not check_file_structure():
             logger.error("Проверка структуры файлов не пройдена")
             input("Нажмите Enter для выхода...")
             return False
         
-        # Создание необходимых директорий
+        # 4. ДОБАВИТЬ: Настройка matplotlib для GUI
+        configure_matplotlib_for_tkinter()
+        
+        # 5. Создание необходимых директорий
         create_initial_directories()
         
         # Импорт GUI модуля

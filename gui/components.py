@@ -10,6 +10,8 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Callable, List, Optional
+from datetime import datetime
+import logging
 
 from core.config import APP_CONFIG
 from core.utils import format_number
@@ -529,7 +531,34 @@ class VisualizationSection(GUIComponent):
             text="Статистика маршрутов",
             command=lambda: self.on_routes_statistics and self.on_routes_statistics()
         ).pack(pady=2)
-    
+
+    def update_plot_creation_status(self, status: str, is_error: bool = False):
+        """НОВЫЙ метод обновления статуса создания графика."""
+        try:
+            if hasattr(self, 'plot_info') and self.plot_info:
+                # Очищаем и показываем статус
+                self.plot_info.delete(1.0, tk.END)
+                
+                timestamp = datetime.now().strftime("%H:%M:%S")
+                
+                status_text = f"""СТАТУС СОЗДАНИЯ ГРАФИКА
+    ========================
+
+    ⏰ Время: {timestamp}
+    📊 Статус: {status}
+
+    {'❌ Обнаружена ошибка!' if is_error else '✅ Выполняется...'}
+
+    Подождите завершения операции или проверьте
+    журнал операций для подробностей.
+    """
+                
+                self.plot_info.insert(1.0, status_text)
+                self.plot_info.see(1.0)
+                
+        except Exception as e:
+            logging.error("Ошибка обновления статуса графика: %s", e)
+
     def show_default_instructions(self):
         """ОБНОВЛЕННЫЕ инструкции для встроенного графика."""
         instructions = """ВСТРОЕННЫЙ ИНТЕРАКТИВНЫЙ ГРАФИК
