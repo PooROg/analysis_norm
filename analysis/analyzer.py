@@ -1,7 +1,7 @@
-# analysis/analyzer.py
+# analysis/analyzer.py (обновленный для встроенной визуализации)
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Основной анализатор норм расхода электроэнергии."""
+"""Основной анализатор норм расхода электроэнергии с поддержкой встроенной визуализации."""
 
 from __future__ import annotations
 
@@ -9,12 +9,10 @@ import logging
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
-import plotly.graph_objects as go
 
 from analysis.data_analyzer import RouteDataAnalyzer, CoefficientsApplier
 from analysis.html_route_processor import HTMLRouteProcessor
 from analysis.html_norm_processor import HTMLNormProcessor
-from analysis.visualization import PlotBuilder
 from core.coefficients import LocomotiveCoefficientsManager
 from core.filter import LocomotiveFilter
 from core.norm_storage import NormStorage
@@ -24,21 +22,19 @@ logger = logging.getLogger(__name__)
 
 
 class InteractiveNormsAnalyzer:
-    """Интерактивный анализатор норм расхода электроэнергии."""
+    """Интерактивный анализатор норм расхода электроэнергии с поддержкой встроенной визуализации."""
 
     def __init__(self):
         self.route_processor = HTMLRouteProcessor()
         self.norm_processor = HTMLNormProcessor()
         self.norm_storage = NormStorage()
         self.data_analyzer = RouteDataAnalyzer(self.norm_storage)
-        self.plot_builder = PlotBuilder()
-        self.plot_builder._analyzer = self 
 
         self.routes_df: Optional[pd.DataFrame] = None
         self.analyzed_results: Dict[str, Dict] = {}
         self.sections_norms_map: Dict[str, List[str]] = {}
 
-        logger.info("Инициализирован анализатор норм")
+        logger.info("Инициализирован анализатор норм с поддержкой встроенной визуализации")
 
     # ========================== Загрузка данных ==========================
 
@@ -157,13 +153,18 @@ class InteractiveNormsAnalyzer:
         locomotive_filter: Optional[LocomotiveFilter] = None,
         coefficients_manager: Optional[LocomotiveCoefficientsManager] = None,
         use_coefficients: bool = False,
-    ) -> Tuple[Optional[go.Figure], Optional[Dict], Optional[str]]:
-        """Анализирует участок с построением интерактивного графика."""
+    ) -> Tuple[Optional[pd.DataFrame], Optional[Dict], Optional[Dict], Optional[str]]:
+        """
+        Анализирует участок и возвращает данные для встроенного графика.
+        
+        Returns:
+            Tuple (analyzed_routes, norm_functions, statistics, error_message)
+        """
         logger.info("Анализ участка: %s, норма: %s, только один участок: %s",
                    section_name, norm_id, single_section_only)
 
         if self.routes_df is None or self.routes_df.empty:
-            return None, None, "Данные маршрутов не загружены"
+            return None, None, None, "Данные маршрутов не загружены"
 
         try:
             # Фильтрация данных
@@ -173,7 +174,8 @@ class InteractiveNormsAnalyzer:
             )
             
             if section_routes.empty:
-                return None, None, self._get_empty_data_message(section_name, norm_id, single_section_only)
+                error_msg = self._get_empty_data_message(section_name, norm_id, single_section_only)
+                return None, None, None, error_msg
 
             # Анализ данных
             analyzed_data, norm_functions = self.data_analyzer.analyze_section_data(
@@ -181,13 +183,8 @@ class InteractiveNormsAnalyzer:
             )
             
             if analyzed_data.empty:
-                return None, None, f"Не удалось проанализировать участок {section_name}"
+                return None, None, None, f"Не удалось проанализировать участок {section_name}"
 
-            # Построение графика
-            fig = self.plot_builder.create_interactive_plot(
-                section_name, analyzed_data, norm_functions, norm_id, single_section_only
-            )
-            
             # Статистика
             statistics = self.data_analyzer.calculate_statistics(analyzed_data)
 
@@ -200,11 +197,11 @@ class InteractiveNormsAnalyzer:
             }
 
             logger.info("Анализ участка %s завершен", section_name)
-            return fig, statistics, None
+            return analyzed_data, norm_functions, statistics, None
 
         except Exception as e:
             logger.error("Ошибка анализа участка %s: %s", section_name, e, exc_info=True)
-            return None, None, f"Ошибка анализа: {str(e)}"
+            return None, None, None, f"Ошибка анализа: {str(e)}"
 
     # ========================== Экспорт и утилиты ==========================
 
@@ -230,10 +227,6 @@ class InteractiveNormsAnalyzer:
     def validate_norms_storage(self) -> Dict:
         """Валидирует хранилище норм."""
         return self.norm_storage.validate_norms()
-
-    def add_browser_controls(self, html_content: str) -> str:
-        """Добавляет браузерные контролы к HTML."""
-        return self.plot_builder.add_browser_controls(html_content)
 
     # ========================== Внутренние методы ==========================
 
@@ -321,8 +314,3 @@ class InteractiveNormsAnalyzer:
             base_msg = f"Нет маршрутов{suffix} для участка {section_name} с нормой {norm_id}"
         
         return base_msg
-
-    # Метод для совместимости (используется в GUI)
-    def _add_browser_mode_switcher(self, html_content: str) -> str:
-        """Устаревший метод - делегируем в PlotBuilder."""
-        return self.add_browser_controls(html_content)

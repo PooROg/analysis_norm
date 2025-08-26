@@ -1,16 +1,13 @@
-# gui/interface.py (оптимизированная версия)
+# gui/interface.py (обновленный)
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Главный интерфейс приложения."""
+"""Главный интерфейс приложения с встроенной визуализацией."""
 
 from __future__ import annotations
 
 import logging
-import os
-import tempfile
 import threading
 import tkinter as tk
-import webbrowser
 from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -20,15 +17,16 @@ from analysis.analyzer import InteractiveNormsAnalyzer
 from core.coefficients import LocomotiveCoefficientsManager
 from core.config import APP_CONFIG
 from core.filter import LocomotiveFilter
-from core.utils import extract_route_key, format_number
+from core.utils import format_number
 from dialogs.selector import LocomotiveSelectorDialog
 from gui.components import ControlSection, FileSection, VisualizationSection
+from visualization import PlotWindow
 
 logger = logging.getLogger(__name__)
 
 
 class NormsAnalyzerGUI:
-    """Главный класс интерфейса анализатора норм."""
+    """Главный класс интерфейса анализатора норм с встроенной визуализацией."""
 
     def __init__(self, root: tk.Tk):
         self.root = root
@@ -40,9 +38,10 @@ class NormsAnalyzerGUI:
         self.locomotive_filter: Optional[LocomotiveFilter] = None
         self.coefficients_manager = LocomotiveCoefficientsManager()
         
+        # Окно графика
+        self.plot_window: Optional[PlotWindow] = None
+        
         # Состояние
-        self.current_plot = None
-        self.temp_html_file: Optional[str] = None
         self.use_coefficients = False
         self.exclude_low_work = False
 
@@ -104,6 +103,7 @@ class NormsAnalyzerGUI:
         control_frame = self.control_section.create_widgets()
         control_frame.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(0, 10))
 
+        # ИЗМЕНЕНО: Обновленная секция визуализации
         self.viz_section = VisualizationSection(main_container)
         viz_frame = self.viz_section.create_widgets()
         viz_frame.grid(row=1, column=1, sticky=(tk.W, tk.E, tk.N, tk.S))
@@ -143,8 +143,8 @@ class NormsAnalyzerGUI:
         self.control_section.on_edit_norms_clicked = self._on_edit_norms_clicked
         self.control_section.on_norm_selected = self._on_norm_selected
 
-        # Visualization section callbacks
-        self.viz_section.on_plot_open = self._open_plot_in_browser
+        # ИЗМЕНЕНО: Обновленные callbacks для встроенной визуализации
+        self.viz_section.on_plot_open = self._open_integrated_plot
         self.viz_section.on_norm_storage_info = self._show_norm_storage_info
         self.viz_section.on_validate_norms = self._validate_norms
         self.viz_section.on_routes_statistics = self._show_routes_statistics
@@ -228,8 +228,8 @@ class NormsAnalyzerGUI:
             )
 
         def on_success(result):
-            fig, statistics, error = result
-            self._update_analysis_results(fig, statistics, error, section, norm_id, single_section_only)
+            routes_df, norm_functions, statistics, error = result
+            self._update_analysis_results(routes_df, norm_functions, statistics, error, section, norm_id, single_section_only)
 
         self._run_async(analyze, on_success)
 
@@ -359,37 +359,25 @@ class NormsAnalyzerGUI:
         if self.control_section.section_var.get():
             self._on_analyze_clicked()
 
-    def _update_analysis_results(self, fig, statistics, error, section_name: str, 
+    def _update_analysis_results(self, routes_df, norm_functions, statistics, error, section_name: str, 
                                 norm_id: Optional[str], single_section_only: bool):
         """Обновляет результаты анализа."""
         if error:
             messagebox.showerror("Ошибка", error)
             return
 
-        if fig is None or statistics is None:
+        if routes_df is None or norm_functions is None or statistics is None:
             messagebox.showwarning("Предупреждение", "Не удалось выполнить анализ")
             return
 
-        # Сохраняем график
-        self.current_plot = fig
-        
-        # Создаем временный файл
-        fd, temp_path = tempfile.mkstemp(suffix='.html')
-        os.close(fd)
-        self.temp_html_file = temp_path
-
-        # Генерируем HTML
-        from plotly.offline import plot
-        html_string = plot(
-            fig, output_type='div', include_plotlyjs=True, 
-            config={'displayModeBar': True, 'locale': 'ru'}
-        )
-        
-        full_html = self._create_plot_html(section_name, html_string)
-        full_html = self.analyzer.add_browser_controls(full_html)
-
-        with open(self.temp_html_file, 'w', encoding='utf-8') as f:
-            f.write(full_html)
+        # ИЗМЕНЕНО: Сохраняем данные для встроенного графика
+        self._current_plot_data = {
+            'section_name': section_name,
+            'routes_df': routes_df,
+            'norm_functions': norm_functions,
+            'specific_norm_id': norm_id,
+            'single_section_only': single_section_only
+        }
 
         # Обновляем интерфейс
         self.viz_section.enable_plot_button(True)
@@ -401,19 +389,35 @@ class NormsAnalyzerGUI:
         filter_text = " (только один участок)" if single_section_only else ""
         logger.info("Анализ участка %s%s%s завершен", section_name, norm_text, filter_text)
 
-    def _create_plot_html(self, section_name: str, html_string: str) -> str:
-        """Создает полный HTML для графика."""
-        return f'''<!DOCTYPE html>
-<html lang="ru">
-<head>
-    <title>График анализа участка {section_name}</title>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-</head>
-<body>
-    {html_string}
-</body>
-</html>'''
+    # ========================== Встроенная визуализация ==========================
+
+    def _open_integrated_plot(self):
+        """Открывает интегрированный график в новом окне."""
+        if not hasattr(self, '_current_plot_data') or not self._current_plot_data:
+            messagebox.showwarning("Предупреждение", "Сначала выполните анализ участка")
+            return
+
+        try:
+            # Проверяем, не открыто ли уже окно графика
+            if self.plot_window and self.plot_window.is_active():
+                self.plot_window.bring_to_front()
+                messagebox.showinfo("Информация", "Окно графика уже открыто")
+                return
+
+            logger.info("Открытие встроенного графика")
+            
+            # Создаем новое окно графика
+            self.plot_window = PlotWindow(self.root)
+            plot_window_tk = self.plot_window.create_window()
+            
+            # Отображаем график
+            self.plot_window.show_plot(**self._current_plot_data)
+            
+            logger.info("Встроенный график открыт успешно")
+
+        except Exception as e:
+            logger.error("Ошибка открытия встроенного графика: %s", e, exc_info=True)
+            messagebox.showerror("Ошибка", f"Не удалось открыть график: {str(e)}")
 
     # ========================== Utility Methods ==========================
 
@@ -484,35 +488,13 @@ class NormsAnalyzerGUI:
                 messagebox.showerror("Ошибка", f"Ошибка экспорта: {str(e)}")
 
     def _export_plot(self):
-        """Экспортирует график."""
-        if not self.current_plot:
-            messagebox.showwarning("Предупреждение", "Нет графика для экспорта")
+        """Экспортирует график через окно графика."""
+        if not self.plot_window or not self.plot_window.is_active():
+            messagebox.showwarning("Предупреждение", "Сначала откройте график")
             return
-
-        filename = filedialog.asksaveasfilename(
-            defaultextension=".html",
-            filetypes=[("HTML files", "*.html"), ("PNG files", "*.png")],
-        )
-        
-        if filename:
-            try:
-                if filename.endswith('.html'):
-                    self.current_plot.write_html(filename)
-                else:
-                    self.current_plot.write_image(filename)
-                logger.info("График экспортирован в %s", Path(filename).name)
-                messagebox.showinfo("Успех", "График успешно экспортирован")
-            except Exception as e:
-                logger.error("Ошибка экспорта графика: %s", e)
-                messagebox.showerror("Ошибка", f"Ошибка экспорта: {str(e)}")
-
-    def _open_plot_in_browser(self):
-        """Открывает график в браузере."""
-        if self.temp_html_file and os.path.exists(self.temp_html_file):
-            webbrowser.open(f'file://{Path(self.temp_html_file).resolve()}')
-            logger.info("График открыт в браузере")
-        else:
-            messagebox.showwarning("Предупреждение", "График не найден. Выполните анализ участка.")
+            
+        messagebox.showinfo("Информация", "Используйте кнопки экспорта в окне графика")
+        self.plot_window.bring_to_front()
 
     # ========================== Info Methods ==========================
 
@@ -670,8 +652,10 @@ class NormsAnalyzerGUI:
     def on_closing(self):
         """Обработчик закрытия окна."""
         try:
-            if self.temp_html_file and os.path.exists(self.temp_html_file):
-                os.remove(self.temp_html_file)
+            # Закрываем окно графика если оно открыто
+            if self.plot_window and self.plot_window.is_active():
+                self.plot_window._on_window_close()
+                
             logger.info("Приложение закрывается")
         except Exception as e:
             logger.error("Ошибка при закрытии: %s", e)
